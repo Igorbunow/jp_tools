@@ -42,3 +42,43 @@ qemu_ensure_nameservers() {
 
     printf 'Added fallback DNS nameservers to %s: %s\n' "$resolv_file" "${nameservers[*]}"
 }
+
+qemu_prepare_rootfs_resolv() {
+    local rootfs_resolv="$1"
+    local host_resolv="$2"
+    local backup="${rootfs_resolv}.bak"
+    local missing_marker="${backup}.missing"
+
+    if [[ -e "$backup" || -L "$backup" || -e "$missing_marker" ]]; then
+        printf 'Resolver backup already exists: %s\n' "$backup" >&2
+        return 1
+    fi
+    if [[ -e "$rootfs_resolv" || -L "$rootfs_resolv" ]]; then
+        sudo mv -- "$rootfs_resolv" "$backup" || return 1
+    else
+        sudo touch -- "$missing_marker" || return 1
+    fi
+    if ! sudo cp -- "$host_resolv" "$rootfs_resolv"; then
+        qemu_restore_rootfs_resolv "$rootfs_resolv"
+        return 1
+    fi
+    if ! qemu_ensure_nameservers "$rootfs_resolv"; then
+        qemu_restore_rootfs_resolv "$rootfs_resolv"
+        return 1
+    fi
+}
+
+qemu_restore_rootfs_resolv() {
+    local rootfs_resolv="$1"
+    local backup="${rootfs_resolv}.bak"
+    local missing_marker="${backup}.missing"
+
+    if [[ -e "$backup" || -L "$backup" ]]; then
+        sudo rm -f -- "$rootfs_resolv" || return 1
+        sudo mv -- "$backup" "$rootfs_resolv" || return 1
+    elif [[ -e "$missing_marker" ]]; then
+        sudo rm -f -- "$rootfs_resolv" || return 1
+        sudo rm -f -- "$missing_marker" || return 1
+    fi
+    return 0
+}

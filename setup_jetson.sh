@@ -10,8 +10,16 @@ DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 source "$PROJECT_DIR/lib/qemu_resolv.sh"
 # shellcheck source=lib/qemu_apt.sh
 source "$PROJECT_DIR/lib/qemu_apt.sh"
+# shellcheck source=lib/root_uart.sh
+source "$PROJECT_DIR/lib/root_uart.sh"
+# shellcheck source=lib/qemu_chroot.sh
+source "$PROJECT_DIR/lib/qemu_chroot.sh"
+# shellcheck source=lib/qemu_session.sh
+source "$PROJECT_DIR/lib/qemu_session.sh"
+# shellcheck source=lib/progress.sh
+source "$PROJECT_DIR/lib/progress.sh"
 
-# Параметры по умолчанию
+# Default settings
 JETSON_USER="${JETSON_USER:-nvidia}"
 JETSON_PASS="${JETSON_PASS:-nvidia}"
 JETSON_HOST="${JETSON_HOST:-nvidia-agx-orin}"
@@ -25,6 +33,7 @@ L4T_VERSION="${L4T_VERSION:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-}"
 PRINT_PATHS=false
 APT_UPGRADE_BATCH=false
+FORCE_QEMU_CLEANUP=false
 APT_PACKAGES_FILE="${JETSON_APT_PACKAGES_FILE:-$PROJECT_DIR/qemu-packages.txt}"
 
 case "${JETSON_SKIP_DEBIAN_PATCHES:-0}" in
@@ -54,26 +63,27 @@ NC='\033[0m' # No Color
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo "Options:"
-    echo "  -u, --user <name>      Имя пользователя (default: nvidia)"
-    echo "  -p, --pass <pass>      Пароль (default: nvidia)"
-    echo "  -n, --host <name>      Имя хоста (default: nvidia-agx-orin)"
-    echo "  --archive-dir <path>   Каталог с архивами NVIDIA"
-    echo "  --deploy-dir <path>    Базовый каталог развёртывания (создаёт Linux_for_Tegra/)"
-    echo "  -d, --dir <path>       Алиас для --deploy-dir"
+    echo "  -u, --user <name>      User name (default: nvidia)"
+    echo "  -p, --pass <pass>      Password (default: nvidia)"
+    echo "  -n, --host <name>      Host name (default: nvidia-agx-orin)"
+    echo "  --archive-dir <path>   Directory containing NVIDIA archives"
+    echo "  --deploy-dir <path>    Deployment base directory (creates Linux_for_Tegra/)"
+    echo "  -d, --dir <path>       Alias for --deploy-dir"
     echo "                         Default shared path: $DEFAULT_SHARED_DIR"
-    echo "  --print-paths          Показать выбранные пути и выйти"
-    echo "  -y, --yes              Тихий режим (пакетный режим)"
-    echo "  -f, --force            Принудительное удаление старой установки"
-    echo "  --skip-qemu            Пропустить интерактивную оболочку QEMU"
-    echo "  JETSON_QEMU_NAMESERVERS=... DNS-серверы для rootfs без nameserver (default: 8.8.8.8 1.1.1.1)"
-    echo "  --apt-upgrade          В пакетном режиме обновить rootfs через apt"
-    echo "  --apt-packages-file <path> Файл пакетов (default: $APT_PACKAGES_FILE)"
-    echo "  JETSON_APT_UPGRADE=1   Включить apt update/upgrade в пакетном режиме"
-    echo "  --skip-debian-patches  Не запускать setup_debian.sh"
-    echo "  --version <version>    Версия L4T (по умолчанию последняя полная пара)"
-    echo "  --board <name>         Имя профиля flash.sh (default: jetson-agx-orin-devkit-noeeprom)"
-    echo "  --jetpack-version <v>  Версия для выбора b_conf (по умолчанию имя каталога архивов)"
-    echo "  --no-root-uart-login   Отключить root autologin на UART (default: включён)"
+    echo "  --print-paths          Show resolved paths and exit"
+    echo "  -y, --yes              Non-interactive batch mode"
+    echo "  -f, --force            Remove an existing deployment"
+    echo "  --skip-qemu            Skip the interactive QEMU shell"
+    echo "  JETSON_QEMU_NAMESERVERS=... DNS servers for rootfs without nameservers (default: 8.8.8.8 1.1.1.1)"
+    echo "  --force-qemu-cleanup   Terminate/recover a stale QEMU session in batch mode"
+    echo "  --apt-upgrade          Run apt update/upgrade in batch mode"
+    echo "  --apt-packages-file <path> Package list file (default: $APT_PACKAGES_FILE)"
+    echo "  JETSON_APT_UPGRADE=1   Enable apt update/upgrade in batch mode"
+    echo "  --skip-debian-patches  Do not run setup_debian.sh"
+    echo "  --version <version>    L4T version (default: latest complete archive pair)"
+    echo "  --board <name>         flash.sh profile (default: jetson-agx-orin-devkit-noeeprom)"
+    echo "  --jetpack-version <v>  b_conf selection version (default: archive directory name)"
+    echo "  --no-root-uart-login   Disable root UART autologin (default: enabled)"
     exit 0
 }
 
@@ -90,6 +100,7 @@ while [[ $# -gt 0 ]]; do
         -y|--yes) SILENT_MODE=true; shift ;;
         -f|--force) FORCE_DELETE=true; shift ;;
         --skip-qemu) SKIP_QEMU=true; shift ;;
+        --force-qemu-cleanup) FORCE_QEMU_CLEANUP=true; shift ;;
         --apt-upgrade) APT_UPGRADE_BATCH=true; shift ;;
         --apt-packages-file) APT_PACKAGES_FILE="${2:?--apt-packages-file requires a path}"; shift 2 ;;
         --skip-debian-patches) SKIP_DEBIAN_PATCHES=true; shift ;;
@@ -115,6 +126,8 @@ DEPLOY_BASE_DIR="$(realpath -m -- "$DEPLOY_BASE_DIR")"
 [[ "$APT_PACKAGES_FILE" = /* ]] || APT_PACKAGES_FILE="$PWD/$APT_PACKAGES_FILE"
 APT_PACKAGES_FILE="$(realpath -m -- "$APT_PACKAGES_FILE")"
 TARGET_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
+QEMU_SESSION_LOCK_FILE="$DEPLOY_BASE_DIR/.jetson-qemu-session.lock"
+QEMU_SESSION_HELD=false
 LOCAL_ROOTFS_OVERLAY="$PROJECT_DIR/$LOCAL_ROOTFS_OVERLAY_NAME"
 JETPACK_VERSION="${JETPACK_VERSION:-$(basename -- "$ARCHIVE_DIR")}"
 JETPACK_VERSION="${JETPACK_VERSION% }"
@@ -139,7 +152,7 @@ if [[ "$PRINT_PATHS" == true ]]; then
     exit 0
 fi
 
-[[ -d "$ARCHIVE_DIR" ]] || { echo -e "${RED}Ошибка: каталог архивов не найден: $ARCHIVE_DIR${NC}" >&2; exit 1; }
+[[ -d "$ARCHIVE_DIR" ]] || { echo -e "${RED}Error: archive directory not found: $ARCHIVE_DIR${NC}" >&2; exit 1; }
 mkdir -p -- "$DEPLOY_BASE_DIR"
 DEPLOY_BASE_DIR="$(cd -- "$DEPLOY_BASE_DIR" && pwd)"
 TARGET_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
@@ -154,10 +167,10 @@ confirm() {
 }
 
 check_dependencies() {
-    local deps=("pv" "tar" "sudo" "df" "awk")
+    local deps=("pv" "tar" "sudo" "df" "awk" "setpriv" "flock" "mountpoint" "umount" "ps")
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
-            echo -e "${RED}Ошибка: $dep не установлен.${NC}"
+            echo -e "${RED}Error: required command '$dep' is not installed.${NC}"
             exit 1
         fi
     done
@@ -165,16 +178,16 @@ check_dependencies() {
 
 check_disk_space() {
     local path=$1
-    echo -e "${GREEN}--- Проверка дискового пространства ---${NC}"
+    echo -e "${GREEN}--- Disk space check ---${NC}"
     local free_space=$(df -h "$path" | awk 'NR==2 {print $4}')
     local device=$(df -h "$path" | awk 'NR==2 {print $1}')
-    echo -e "Путь: $path (Устройство: $device)"
-    echo -e "Доступно: ${GREEN}$free_space${NC}"
+    echo -e "Path: $path (Device: $device)"
+    echo -e "Available: ${GREEN}$free_space${NC}"
     echo -e "----------------------------------------"
 }
 
-# Переменные для отслеживания общего прогресса
-TOTAL_STEPS=8
+# Overall progress tracking
+TOTAL_STEPS=0
 CURRENT_STEP=0
 
 select_release_pair() {
@@ -190,18 +203,26 @@ select_release_pair() {
         fi
     done
     if ((${#versions[@]} == 0)); then
-        echo -e "${RED}Ошибка: не найдена согласованная пара Jetson_Linux и Sample-Root-Filesystem в $ARCHIVE_DIR (version=${L4T_VERSION:-latest})${NC}" >&2
+        echo -e "${RED}Error: no matching Jetson_Linux and Sample-Root-Filesystem archive pair found in $ARCHIVE_DIR (version=${L4T_VERSION:-latest})${NC}" >&2
         exit 1
     fi
     version="$(printf '%s\n' "${versions[@]}" | sort -Vu | tail -n1)"
     L4T_RELEASE_FILE="Jetson_Linux_${version}_aarch64.tbz2"
     ROOTFS_FILE="Tegra_Linux_Sample-Root-Filesystem_${version}_aarch64.tbz2"
-    echo "Выбрана пара исходников L4T ${version}."
+    echo "Selected L4T source pair: ${version}."
 }
 
 update_step() {
     CURRENT_STEP=$((CURRENT_STEP + 1))
-    echo -e "\n${GREEN}[Шаг $CURRENT_STEP из $TOTAL_STEPS] $1${NC}"
+    echo -e "\n${GREEN}[Step $CURRENT_STEP of $TOTAL_STEPS] $1${NC}"
+}
+
+print_notice() {
+    echo -e "${GREEN}$*${NC}"
+}
+
+print_error() {
+    echo -e "${RED}$*${NC}" >&2
 }
 
 extract_with_progress() {
@@ -210,55 +231,55 @@ extract_with_progress() {
     local desc="$3"
     
     if [ ! -f "$archive_path" ]; then
-        echo -e "${RED}Ошибка: $archive_path не найден.${NC}"
+        echo -e "${RED}Error: archive not found: $archive_path${NC}"
         return 1
     fi
 
     local size_bytes=$(stat -c%s "$archive_path")
     local size_human=$(du -h "$archive_path" | awk '{print $1}')
-    echo -e "${GREEN}Распаковка $desc...${NC}"
+    echo -e "${GREEN}Extracting $desc...${NC}"
     
-    # Формат pv: %p-процент, %t-время, %e-ETA, %r-скорость, %b-байты
-    # Мы вставляем size_human прямо в строку формата, так как %s может не работать
+    # pv format: %p percent, %t elapsed time, %e ETA, %r rate, %b bytes.
+    # Insert size_human directly because %s may not work.
     pv -F "%p %t %e [%r] [%b / $size_human] " -s "$size_bytes" "$archive_path" | sudo tar -xjf - -C "$dest_dir"
     
     if [ ${PIPESTATUS[0]} -eq 0 ]; then
-        echo -e "${GREEN}Успешно: $desc${NC}"
+        echo -e "${GREEN}Completed: $desc${NC}"
         return 0
     else
-        echo -e "${RED}Ошибка при распаковке $desc${NC}"
+        echo -e "${RED}Error extracting $desc${NC}"
         return 1
     fi
 }
 
 deploy_system() {
-    echo -e "${GREEN}=== Начало процесса развертывания ===${NC}"
+    echo -e "${GREEN}=== Starting deployment ===${NC}"
     
     # 1. Extract L4T Core
-    update_step "Распаковка ядра L4T"
+    update_step "Extracting L4T core"
     extract_with_progress "$L4T_RELEASE_FILE" "$DEPLOY_BASE_DIR" "L4T Core" || exit 1
     
     # 2. Extract RootFS
-    update_step "Распаковка Sample RootFS"
+    update_step "Extracting Sample RootFS"
     sudo mkdir -p "$TARGET_DIR/rootfs"
     extract_with_progress "$ROOTFS_FILE" "$TARGET_DIR/rootfs" "Sample RootFS" || exit 1
     
     # 3. Apply Binaries
-    update_step "Применение бинарных файлов NVIDIA"
+    update_step "Applying NVIDIA binaries"
     cd "$TARGET_DIR" || exit 1
     if sudo ./apply_binaries.sh; then
-        echo -e "${GREEN}Бинарные файлы применены.${NC}"
+        echo -e "${GREEN}NVIDIA binaries applied.${NC}"
     else
-        echo -e "${RED}Ошибка apply_binaries.sh${NC}"
+        echo -e "${RED}Error: apply_binaries.sh failed.${NC}"
         exit 1
     fi
     
     # 4. Create User
-    update_step "Настройка пользователя: $JETSON_USER"
+    update_step "Creating user: $JETSON_USER"
     if sudo ./tools/l4t_create_default_user.sh -u "$JETSON_USER" -p "$JETSON_PASS" -a -n "$JETSON_HOST" --accept-license; then
-        echo -e "${GREEN}Пользователь создан.${NC}"
+        echo -e "${GREEN}User created.${NC}"
     else
-        echo -e "${RED}Ошибка создания пользователя.${NC}"
+        echo -e "${RED}Error creating user.${NC}"
         exit 1
     fi
 
@@ -266,101 +287,105 @@ deploy_system() {
     # the UART login only after this command has completed.
     
     # 5. Overlay files
-    update_step "Копирование Overlay (root_fs)"
+    update_step "Copying root_fs overlay"
     if [ -d "$LOCAL_ROOTFS_OVERLAY" ]; then
         if sudo cp -r "$LOCAL_ROOTFS_OVERLAY"/* "$TARGET_DIR/rootfs/"; then
-            echo -e "${GREEN}Содержимое root_fs успешно скопировано в RootFS.${NC}"
+            echo -e "${GREEN}root_fs overlay copied to RootFS.${NC}"
         else
-            echo -e "${RED}Ошибка при копировании Overlay!${NC}"
+            echo -e "${RED}Error copying root_fs overlay.${NC}"
             exit 1
         fi
     else
-        echo -e "Папка $LOCAL_ROOTFS_OVERLAY не найдена, пропускаю overlay."
+        echo -e "Overlay directory not found: $LOCAL_ROOTFS_OVERLAY (skipping)."
     fi
     
     # 6. Public Sources (optional)
     if [ -f "$ARCHIVE_DIR/$SOURCES_FILE" ]; then
-       echo -e "\n[Опционально] Распаковка Sources"
+       echo -e "\n[Optional] Extracting public sources"
        extract_with_progress "$SOURCES_FILE" "$TARGET_DIR" "Public Sources" || exit 1
     fi
     
-    echo -e "\n${GREEN}=== Развертывание выполнено успешно ===${NC}"
+    echo -e "\n${GREEN}=== Deployment completed successfully ===${NC}"
 }
 
 copy_board_configuration() {
     local board_dir="$PROJECT_DIR/$LOCAL_BOARD_CONFIG_NAME"
     local bundle_dir payload
-    [[ -d "$TARGET_DIR" ]] || { echo -e "${RED}Ошибка: L4T не развернут в $TARGET_DIR${NC}" >&2; return 1; }
-    [[ -f "$board_dir/select_config.sh" ]] || { echo -e "${RED}Селектор b_conf не найден: $board_dir/select_config.sh${NC}" >&2; return 1; }
+    [[ -d "$TARGET_DIR" ]] || { echo -e "${RED}Error: L4T is not deployed at $TARGET_DIR${NC}" >&2; return 1; }
+    [[ -f "$board_dir/select_config.sh" ]] || { echo -e "${RED}Error: b_conf selector not found: $board_dir/select_config.sh${NC}" >&2; return 1; }
     # shellcheck source=/dev/null
     source "$board_dir/select_config.sh"
     bundle_dir="$(b_conf_select_package "$board_dir" "$JETSON_BOARD" "$JETPACK_VERSION")" || return 1
     payload="$bundle_dir/Linux_for_Tegra"
     [[ -f "$payload/${JETSON_BOARD}.conf" ]] || {
-        echo -e "${RED}В пакете нет профиля ${JETSON_BOARD}.conf: $payload${NC}" >&2
+        echo -e "${RED}Error: profile ${JETSON_BOARD}.conf is missing from package: $payload${NC}" >&2
         return 1
     }
 
-    update_step "Установка b_conf: $JETSON_BOARD для JetPack $JETPACK_VERSION"
+    update_step "Installing b_conf: $JETSON_BOARD for JetPack $JETPACK_VERSION"
     b_conf_install_payload "$payload" "$TARGET_DIR" || return 1
 
-    echo -e "${GREEN}Выбран пакет: $bundle_dir${NC}"
-    [[ -f "$bundle_dir/COMPATIBILITY.md" ]] && echo "Журнал совместимости: $bundle_dir/COMPATIBILITY.md"
+    echo -e "${GREEN}Selected package: $bundle_dir${NC}"
+    [[ -f "$bundle_dir/COMPATIBILITY.md" ]] && echo "Compatibility log: $bundle_dir/COMPATIBILITY.md"
 }
 
 apply_debian_patches() {
     [[ -x "$PROJECT_DIR/setup_debian.sh" ]] || {
-        echo -e "${RED}Ошибка: Bash-патчер $PROJECT_DIR/setup_debian.sh не найден или не исполняемый${NC}" >&2
+        echo -e "${RED}Error: Bash patcher not found or not executable: $PROJECT_DIR/setup_debian.sh${NC}" >&2
         return 1
     }
-    update_step "Применение патчей совместимости L4T"
+    update_step "Applying L4T compatibility patches"
     sudo "$PROJECT_DIR/setup_debian.sh" --board "$JETSON_BOARD" --version "${L4T_VERSION_SELECTED}" --l4t-dir "$TARGET_DIR"
 }
 
-configure_root_uart_login() {
-    local rootfs="$TARGET_DIR/rootfs"
-    local dropin="$rootfs/etc/systemd/system/serial-getty@ttyTCU0.service.d/autologin.conf"
-    [[ -d "$rootfs/etc/systemd/system" ]] || { echo "systemd unit directory unavailable; UART autologin not configured."; return 0; }
-    if [[ "$ROOT_UART_AUTOLOGIN" == true ]]; then
-        sudo mkdir -p "$(dirname "$dropin")"
-        sudo tee "$dropin" >/dev/null <<'EOF'
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin root --keep-baud 115200,38400,9600 %I ${TERM}
-EOF
-        echo "Enabled passwordless root autologin on serial-getty@ttyTCU0.service. Disable with --no-root-uart-login."
-    else
-        sudo rm -f "$dropin"
-        echo "Passwordless root UART autologin disabled."
+begin_qemu_session() {
+    local rootfs_path="$1"
+    local interactive=true
+    [[ "$SILENT_MODE" == true ]] && interactive=false
+    qemu_session_begin "$QEMU_SESSION_LOCK_FILE" "$rootfs_path" "$interactive" "$FORCE_QEMU_CLEANUP" || return 1
+    QEMU_SESSION_HELD=true
+}
+
+abort_qemu_session() {
+    local rootfs_path="$1"
+    local cleanup_status=0
+    cleanup_qemu_rootfs "$rootfs_path" || cleanup_status=$?
+    if ((cleanup_status == 0)); then end_qemu_session true; else end_qemu_session false; fi
+    return "$cleanup_status"
+}
+
+end_qemu_session() {
+    local clean="$1"
+    if [[ "$QEMU_SESSION_HELD" == true ]]; then
+        qemu_session_end "$clean"
+        local status=$?
+        QEMU_SESSION_HELD=false
+        return "$status"
     fi
 }
 
 prepare_qemu_rootfs() {
     local rootfs_path="$1"
+    update_step "Preparing QEMU rootfs"
+    qemu_session_set_phase "preparing-rootfs" || return 1
     
     if ! command -v qemu-aarch64-static &> /dev/null; then
-        echo "Установка qemu-user-static на хост..."
+        print_notice "Installing qemu-user-static on the host..."
         sudo apt-get update && sudo apt-get install -y qemu-user-static || return 1
     fi
     
     sudo cp /usr/bin/qemu-aarch64-static "$rootfs_path/usr/bin/" || return 1
 
-    # Save the rootfs resolver, then use the host resolver for the temporary
-    # chroot session. Add fallback DNS only when it has no active nameserver.
-    if [[ -f "$rootfs_path/etc/resolv.conf" ]]; then
-        sudo mv "$rootfs_path/etc/resolv.conf" "$rootfs_path/etc/resolv.conf.bak" || return 1
-    fi
-    if ! sudo cp /etc/resolv.conf "$rootfs_path/etc/resolv.conf"; then
-        [[ -f "$rootfs_path/etc/resolv.conf.bak" ]] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
+    # Replace the original resolver temporarily, including dangling symlinks,
+    # and add fallback DNS only when the host resolver has no active server.
+    QEMU_ROOTFS_ACTIVE="$rootfs_path"
+    qemu_prepare_rootfs_resolv "$rootfs_path/etc/resolv.conf" /etc/resolv.conf || {
+        cleanup_qemu_rootfs "$rootfs_path"
         return 1
-    fi
-    if ! qemu_ensure_nameservers "$rootfs_path/etc/resolv.conf"; then
-        sudo rm -f "$rootfs_path/etc/resolv.conf"
-        [ -f "$rootfs_path/etc/resolv.conf.bak" ] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
-        return 1
-    fi
+    }
     
-    echo "Монтирование ресурсов..."
+    qemu_session_set_phase "mounting-rootfs" || { cleanup_qemu_rootfs "$rootfs_path"; return 1; }
+    update_step "Mounting QEMU rootfs resources"
     if ! sudo mount -t proc /proc "$rootfs_path/proc" || \
        ! sudo mount -t sysfs /sys "$rootfs_path/sys" || \
        ! sudo mount --bind /dev "$rootfs_path/dev" || \
@@ -372,82 +397,161 @@ prepare_qemu_rootfs() {
 
 cleanup_qemu_rootfs() {
     local rootfs_path="$1"
+    local failed=false
+    local mount_path
 
-    sudo umount "$rootfs_path/dev/pts" 2>/dev/null || true
-    sudo umount "$rootfs_path/dev" 2>/dev/null || true
-    sudo umount "$rootfs_path/sys" 2>/dev/null || true
-    sudo umount "$rootfs_path/proc" 2>/dev/null || true
-    sudo rm -f "$rootfs_path/etc/resolv.conf"
-    [ -f "$rootfs_path/etc/resolv.conf.bak" ] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
+    for mount_path in "$rootfs_path/dev/pts" "$rootfs_path/dev" "$rootfs_path/sys" "$rootfs_path/proc"; do
+        if sudo mountpoint -q "$mount_path"; then
+            sudo umount "$mount_path" || failed=true
+        fi
+    done
+    qemu_restore_rootfs_resolv "$rootfs_path/etc/resolv.conf" || failed=true
+
+    if [[ "$failed" == true ]]; then
+        print_error "Error: QEMU rootfs cleanup failed for $rootfs_path. Check its mount points and resolver backup."
+        return 1
+    fi
+    QEMU_ROOTFS_ACTIVE=""
 }
+
+qemu_handle_signal() {
+    local signal_name="$1"
+    local exit_status="$2"
+
+    if [[ -n "$QEMU_ROOTFS_ACTIVE" ]]; then
+        print_notice "Emergency cleanup after $signal_name: cleaning QEMU rootfs mounts..."
+        cleanup_qemu_rootfs "$QEMU_ROOTFS_ACTIVE" || true
+    fi
+    if [[ "$QEMU_SESSION_HELD" == true ]]; then
+        if [[ -z "$QEMU_ROOTFS_ACTIVE" ]]; then end_qemu_session true; else end_qemu_session false; fi
+    fi
+    trap - "$signal_name"
+    exit "$exit_status"
+}
+
+trap 'qemu_handle_signal INT 130' INT
+trap 'qemu_handle_signal TERM 143' TERM
+trap 'qemu_handle_signal HUP 129' HUP
 
 setup_qemu_chroot() {
     local rootfs_path="$TARGET_DIR/rootfs"
     local status
-    echo -e "${GREEN}=== Вход в QEMU Chroot ===${NC}"
-    prepare_qemu_rootfs "$rootfs_path" || return 1
-    
-    echo -e "${GREEN}Вход в окружение (с подавлением ошибок локалей)...${NC}"
-    # Запускаем chroot с чистыми переменными локали
-    sudo chroot "$rootfs_path" /usr/bin/env LANG=C LC_ALL=C LANGUAGE=C /bin/bash
+    begin_qemu_session "$rootfs_path" || return 1
+    prepare_qemu_rootfs "$rootfs_path" || { abort_qemu_session "$rootfs_path" || true; return 1; }
+    qemu_session_set_phase "interactive-chroot" || { abort_qemu_session "$rootfs_path" || true; return 1; }
+    update_step "Entering QEMU chroot for configuration"
+    print_notice "Entering environment with a clean locale..."
+    qemu_chroot_run_shell "$rootfs_path"
     status=$?
 
-    echo "Размонтирование ресурсов..."
-    cleanup_qemu_rootfs "$rootfs_path"
-    echo -e "${GREEN}Завершено.${NC}"
+    update_step "Unmounting QEMU rootfs resources"
+    cleanup_qemu_rootfs "$rootfs_path" || { end_qemu_session false; return 1; }
+    end_qemu_session true || return 1
+    if qemu_chroot_normalize_shell_status "$status"; then
+        if ((status == 130)); then
+            print_notice "QEMU shell received Ctrl+C and exited; cleanup completed."
+        fi
+        status=0
+    fi
+    print_notice "QEMU chroot session finished."
     return "$status"
 }
 
 update_rootfs_packages() {
     local rootfs_path="$TARGET_DIR/rootfs"
     local status
+    local cleanup_status
 
+    QEMU_APT_FAILED_STEP="package list validation"
+    QEMU_APT_EXIT_STATUS=1
     qemu_apt_load_packages "$APT_PACKAGES_FILE" || return 1
-    printf 'Updating rootfs and installing packages from %s: %s\n' \
-        "$APT_PACKAGES_FILE" "${QEMU_APT_PACKAGES[*]:-(no extra packages)}"
-    echo -e "${GREEN}=== Обновление rootfs через APT ===${NC}"
-    prepare_qemu_rootfs "$rootfs_path" || return 1
+    QEMU_APT_FAILED_STEP="QEMU rootfs preparation"
+    QEMU_APT_EXIT_STATUS=1
+    print_notice "Package list: $APT_PACKAGES_FILE (${QEMU_APT_PACKAGES[*]:-(no extra packages)})"
+    begin_qemu_session "$rootfs_path" || { QEMU_APT_FAILED_STEP="stale QEMU session recovery"; return 1; }
+    prepare_qemu_rootfs "$rootfs_path" || { abort_qemu_session "$rootfs_path" || true; return 1; }
+    qemu_session_set_phase "apt-update-upgrade" || { abort_qemu_session "$rootfs_path" || true; return 1; }
+    update_step "Updating rootfs with APT"
     qemu_apt_run_update_upgrade "$rootfs_path"
     status=$?
+    update_step "Unmounting QEMU rootfs resources"
     cleanup_qemu_rootfs "$rootfs_path"
+    cleanup_status=$?
+    if ((cleanup_status != 0)); then
+        QEMU_APT_FAILED_STEP="QEMU rootfs cleanup"
+        QEMU_APT_EXIT_STATUS="$cleanup_status"
+        end_qemu_session false
+        return "$cleanup_status"
+    fi
+    end_qemu_session true || { QEMU_APT_FAILED_STEP="QEMU session release"; return 1; }
     return "$status"
 }
 
-# --- Начало выполнения ---
+# --- Execution starts here ---
 
 check_dependencies
 select_release_pair
 L4T_VERSION_SELECTED="${L4T_RELEASE_FILE#Jetson_Linux_}"
 L4T_VERSION_SELECTED="${L4T_VERSION_SELECTED%_aarch64.tbz2}"
 
-# Проверка текущего статуса
-DEPLOY_STATUS="не развернуто"
+# Check current deployment status.
+DEPLOY_STATUS="not deployed"
 if [ -d "$TARGET_DIR" ]; then
-    DEPLOY_STATUS="обнаружено в $TARGET_DIR"
+    DEPLOY_STATUS="found at $TARGET_DIR"
 fi
 
-echo -e "Целевая директория: ${GREEN}$TARGET_DIR${NC}"
-echo -e "Текущее состояние: ${GREEN}$DEPLOY_STATUS${NC}"
+echo -e "Target directory: ${GREEN}$TARGET_DIR${NC}"
+echo -e "Current status: ${GREEN}$DEPLOY_STATUS${NC}"
 
 WANT_DEPLOY=false
 if [ -d "$TARGET_DIR" ]; then
     if [ "$FORCE_DELETE" = true ]; then
+        # Do not remove a deployment while a QEMU operation still owns or
+        # partially uses its rootfs.
+        begin_qemu_session "$TARGET_DIR/rootfs" || exit 1
+        end_qemu_session true || exit 1
         WANT_DEPLOY=true
     elif [ "$SILENT_MODE" = true ]; then
-        echo "Тихий режим не удаляет существующее развертывание; используем его. Для пересоздания укажите --force."
+        echo "Batch mode keeps the existing deployment. Use --force to recreate it."
         WANT_DEPLOY=false
-    elif confirm "Удалить существующее развертывание в $TARGET_DIR?"; then
-        echo "Удаление старых данных..."
+    elif confirm "Remove the existing deployment at $TARGET_DIR?"; then
+        echo "Removing existing deployment..."
         sudo rm -rf "$TARGET_DIR"
         WANT_DEPLOY=true
-    elif confirm "Попробовать развернуть поверх?"; then
+    elif confirm "Try deploying over the existing directory?"; then
         WANT_DEPLOY=true
     fi
 else
-    if confirm "Развернуть новую систему Jetson L4T?"; then
+    if confirm "Deploy a new Jetson L4T system?"; then
         WANT_DEPLOY=true
     fi
 fi
+
+ROOTFS_EXPECTED=false
+if [[ "$WANT_DEPLOY" == true || -d "$TARGET_DIR/rootfs" ]]; then
+    ROOTFS_EXPECTED=true
+fi
+RUN_ROOTFS_APT=false
+RUN_QEMU_SHELL=false
+if [[ "$ROOTFS_EXPECTED" == true ]]; then
+    if [[ "$SILENT_MODE" == true ]]; then
+        [[ "$APT_UPGRADE_BATCH" == true ]] && RUN_ROOTFS_APT=true
+        [[ "$SKIP_QEMU" == false ]] && RUN_QEMU_SHELL=true
+    else
+        confirm "Run apt update/upgrade on rootfs and install packages from $APT_PACKAGES_FILE?" && RUN_ROOTFS_APT=true
+        if [[ "$SKIP_QEMU" == false ]]; then
+            confirm "Enter the QEMU chroot for configuration?" && RUN_QEMU_SHELL=true
+        fi
+    fi
+fi
+
+HAS_TARGET=false
+if [[ "$WANT_DEPLOY" == true || -d "$TARGET_DIR" ]]; then HAS_TARGET=true; fi
+APPLY_PATCHES=true
+[[ "$SKIP_DEBIAN_PATCHES" == true ]] && APPLY_PATCHES=false
+TOTAL_STEPS="$(jetson_calculate_total_steps \
+    "$WANT_DEPLOY" "$HAS_TARGET" "$ROOTFS_EXPECTED" \
+    "$APPLY_PATCHES" "$RUN_ROOTFS_APT" "$RUN_QEMU_SHELL")"
 
 if [ "$WANT_DEPLOY" = true ]; then
     check_disk_space "$DEPLOY_BASE_DIR"
@@ -457,35 +561,48 @@ fi
 if [ -d "$TARGET_DIR" ]; then
     copy_board_configuration || exit 1
     if [[ "$SKIP_DEBIAN_PATCHES" == true ]]; then
-        echo "Skipping Debian compatibility patches by request."
+        print_notice "Skipping Debian compatibility patches by request."
     else
         apply_debian_patches || exit 1
     fi
-    echo -e "\n${GREEN}Подготовка завершена. После включения платы и подтверждения режима Recovery запустить:${NC}"
+    echo -e "\n${GREEN}Preparation complete. After powering on the board and confirming Recovery mode, run:${NC}"
     echo "  cd \"$TARGET_DIR\" && sudo ./flash.sh $JETSON_BOARD mmcblk0p1"
 fi
 
-# QEMU Шаг всегда спрашиваем, если не пропущен флагом
-if [ "$SKIP_QEMU" = false ]; then
-    if confirm "Требуется ли войти в chroot через QEMU для настройки?"; then
-        setup_qemu_chroot || exit 1
-    fi
+POST_SETUP_FAILED=false
+
+# Run the selected package update before the interactive QEMU shell so the
+# shell sees the updated system and UART settings are still applied afterward.
+if [[ "$RUN_ROOTFS_APT" == true ]]; then
+    update_rootfs_packages || {
+        print_error "Rootfs APT update failed during ${QEMU_APT_FAILED_STEP:-unknown stage} (exit status ${QEMU_APT_EXIT_STATUS:-1})."
+        POST_SETUP_FAILED=true
+    }
 fi
 
+# QEMU shell is independent of package installation and can be skipped.
+if [[ -n "$QEMU_ROOTFS_ACTIVE" ]]; then
+    print_error "QEMU chroot skipped because rootfs cleanup did not complete."
+    POST_SETUP_FAILED=true
+elif [[ "$RUN_QEMU_SHELL" == true ]]; then
+    setup_qemu_chroot || {
+        print_error "QEMU chroot setup failed (exit status $?)."
+        POST_SETUP_FAILED=true
+    }
+fi
+
+# Apply UART login last, after user creation, APT updates, and any QEMU session.
 if [[ -d "$TARGET_DIR/rootfs" ]]; then
-    if [[ "$SILENT_MODE" == true ]]; then
-        if [[ "$APT_UPGRADE_BATCH" == true ]]; then
-            update_rootfs_packages || exit 1
+    if configure_root_uart_login "$TARGET_DIR/rootfs" "$ROOT_UART_AUTOLOGIN"; then
+        update_step "$ROOT_UART_MESSAGE"
+        if [[ "$ROOT_UART_AUTOLOGIN" == true ]]; then
+            echo "  Disable with --no-root-uart-login."
         fi
-    elif confirm "Выполнить apt update/upgrade rootfs и установить пакеты из $APT_PACKAGES_FILE?"; then
-        update_rootfs_packages || exit 1
+    else
+        print_error "UART autologin configuration failed."
+        POST_SETUP_FAILED=true
     fi
 fi
 
-# Must remain the final rootfs mutation: user creation, the optional QEMU shell,
-# and APT updates can alter the image, so configure UART login last.
-if [[ -d "$TARGET_DIR/rootfs" ]]; then
-    configure_root_uart_login
-fi
-
-echo -e "${GREEN}Работа скрипта завершена.${NC}"
+print_notice "Script finished."
+[[ "$POST_SETUP_FAILED" == false ]] || exit 1

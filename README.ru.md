@@ -8,7 +8,7 @@
 
 ## Состав проекта
 
-- `setup_jetson.sh` — разворачивает согласованную пару архивов L4T и Sample Root Filesystem, применяет бинарные файлы NVIDIA, создаёт пользователя, устанавливает профиль платы, по умолчанию применяет исправления для Debian и настраивает UART autologin root. Через QEMU можно обновить rootfs и установить пакеты из `qemu-packages.txt`; DNS fallback добавляется при необходимости. Пакетный запуск и настройка описаны в руководстве. На поддерживаемой Ubuntu шаг Debian-патчей можно вручную пропустить через `--skip-debian-patches` или `JETSON_SKIP_DEBIAN_PATCHES=1`.
+- `setup_jetson.sh` — разворачивает согласованную пару архивов L4T и Sample Root Filesystem, применяет бинарные файлы NVIDIA, создаёт пользователя, устанавливает профиль платы, по умолчанию применяет исправления для Debian и настраивает UART autologin root. Через QEMU можно обновить rootfs и установить пакеты из `qemu-packages.txt`; DNS fallback добавляется при необходимости. Пакетный запуск и настройка описаны в руководстве. На поддерживаемой Ubuntu шаг Debian-патчей можно вручную пропустить через `--skip-debian-patches` или `JETSON_SKIP_DEBIAN_PATCHES=1`. APT и интерактивный QEMU используют блокировку сессии; при зависшем состоянии интерактивный режим спрашивает разрешение, а пакетный требует `--force-qemu-cleanup`.
 - `setup_debian.sh` — устанавливает необходимые пакеты хоста и исправляет скрипты L4T для работы в Debian.
 - `b_conf/` — профили плат, журналы совместимости, селектор профилей и утилиты прошивки.
 - `b_conf/flash_jetson.sh` — показывает профили для JetPack, проверяет USB Recovery до установки профиля и позволяет прошить полный образ, оба слота DTB или только rootfs. Если Recovery не найден, интерактивный запуск предлагает повторить проверку или выйти.
@@ -27,7 +27,7 @@
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  git pv tar bzip2 sudo \
+  git pv tar bzip2 sudo util-linux \
   abootimg xmlstarlet gdisk parted cpio gzip binutils \
   sshpass openssh-client
 ```

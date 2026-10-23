@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 QEMU_APT_PACKAGES=()
+QEMU_APT_FAILED_STEP=""
+QEMU_APT_EXIT_STATUS=0
 
 qemu_apt_load_packages() {
     local package_file="$1"
@@ -29,13 +31,37 @@ qemu_apt_load_packages() {
 
 qemu_apt_run_update_upgrade() {
     local rootfs_path="$1"
+    local status
 
-    sudo chroot "$rootfs_path" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get update || return 1
+    QEMU_APT_FAILED_STEP=""
+    QEMU_APT_EXIT_STATUS=0
+
+    sudo chroot "$rootfs_path" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get update
+    status=$?
+    if ((status != 0)); then
+        QEMU_APT_FAILED_STEP="apt-get update"
+        QEMU_APT_EXIT_STATUS="$status"
+        return "$status"
+    fi
+
     sudo chroot "$rootfs_path" /usr/bin/env DEBIAN_FRONTEND=noninteractive \
-        apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade || return 1
+        apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
+    status=$?
+    if ((status != 0)); then
+        QEMU_APT_FAILED_STEP="apt-get upgrade"
+        QEMU_APT_EXIT_STATUS="$status"
+        return "$status"
+    fi
+
     if ((${#QEMU_APT_PACKAGES[@]})); then
         sudo chroot "$rootfs_path" /usr/bin/env DEBIAN_FRONTEND=noninteractive \
             apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-            install "${QEMU_APT_PACKAGES[@]}" || return 1
+            install "${QEMU_APT_PACKAGES[@]}"
+        status=$?
+        if ((status != 0)); then
+            QEMU_APT_FAILED_STEP="apt-get install"
+            QEMU_APT_EXIT_STATUS="$status"
+            return "$status"
+        fi
     fi
 }

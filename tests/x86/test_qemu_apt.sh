@@ -50,3 +50,30 @@ fi
 [[ ! -s "$JETSON_TEST_LOG" ]] || { echo 'FAIL: apt ran with invalid package list' >&2; exit 1; }
 
 printf 'PASS: package-list parsing and apt update/upgrade/install commands\n'
+
+cat > "$fixture/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$JETSON_TEST_LOG"
+case "$*" in
+    *"$JETSON_TEST_FAIL_MATCH"*) exit "${JETSON_TEST_FAIL_STATUS:-42}" ;;
+esac
+EOF
+chmod +x "$fixture/bin/sudo"
+printf 'mc vim\n' > "$packages"
+qemu_apt_load_packages "$packages"
+for failure_case in \
+    'apt-get update|apt-get update|42' \
+    'upgrade|apt-get upgrade|43' \
+    'install mc vim|apt-get install|44'; do
+    IFS='|' read -r JETSON_TEST_FAIL_MATCH expected_step expected_status <<< "$failure_case"
+    export JETSON_TEST_FAIL_MATCH
+    JETSON_TEST_FAIL_STATUS="$expected_status"
+    export JETSON_TEST_FAIL_STATUS
+    : > "$JETSON_TEST_LOG"
+    if qemu_apt_run_update_upgrade "$fixture/rootfs"; then
+        echo "FAIL: failed $expected_step was reported as successful" >&2; exit 1
+    fi
+    [[ "$QEMU_APT_FAILED_STEP" == "$expected_step" && "$QEMU_APT_EXIT_STATUS" -eq "$expected_status" ]] || {
+        echo "FAIL: $expected_step failure and exit status were not recorded" >&2; exit 1;
+    }
+done

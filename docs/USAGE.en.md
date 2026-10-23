@@ -13,7 +13,7 @@ Install the packages used by the setup and Debian compatibility scripts:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  git pv tar bzip2 sudo \
+  git pv tar bzip2 sudo util-linux \
   abootimg xmlstarlet gdisk parted cpio gzip binutils \
   sshpass openssh-client
 ```
@@ -26,6 +26,7 @@ If `sudo` is not installed yet, run `apt-get` as root (for example, from `su -`)
 | `pv` | Shows extraction progress in `setup_jetson.sh`. |
 | `tar`, `bzip2` | Extracts NVIDIA `.tbz2` release archives. |
 | `sudo` | Runs L4T setup, privileged file operations, and flashing. |
+| `util-linux` | Provides `setpriv`, used to clear host supplementary groups before entering the rootfs chroot. |
 | `abootimg`, `xmlstarlet`, `gdisk`, `parted`, `cpio`, `gzip` | Host tools checked by `setup_debian.sh` for L4T recovery-image generation. The `sgdisk` command is provided by `gdisk`. |
 | `binutils` | Provides the `strings` command used by L4T tooling. |
 | `sshpass`, `openssh-client` | Host SSH utilities expected by the L4T scripts; `ssh-keygen` is provided by `openssh-client`. |
@@ -35,6 +36,8 @@ If `sudo` is not installed yet, run `apt-get` as root (for example, from `su -`)
 ### Optional QEMU chroot
 
 The optional chroot stage needs `qemu-user-static`. `setup_jetson.sh` installs it automatically if the stage is selected and the `qemu-aarch64-static` binary is missing. Use `--skip-qemu` to skip the interactive shell. Before entering the chroot or starting an APT operation, the script checks the temporary rootfs `/etc/resolv.conf`; if it has no active `nameserver` line, it adds `8.8.8.8` and `1.1.1.1`. Override these fallback addresses with a whitespace-separated `JETSON_QEMU_NAMESERVERS` value, for example `JETSON_QEMU_NAMESERVERS="9.9.9.9 149.112.112.112"`. An existing nameserver entry is preserved as-is.
+
+QEMU APT and interactive sessions share a per-deployment lock and record the active phase. On a normal exit, APT failure, or handled signal, mounts and the original resolver are restored before the lock is released. If a previous run left a live session or cleanup artifacts, interactive mode asks before terminating/recovering it. Batch mode stops safely unless `--force-qemu-cleanup` is supplied; that flag permits termination of the recorded `setup_jetson.sh` process and cleanup of its rootfs mounts/resolver state. Do not use the flag while another setup run is intentionally active.
 
 ### Optional OP-TEE warning-suppression build
 
@@ -107,8 +110,6 @@ Example with separate storage:
 
 If `Linux_for_Tegra` already exists, interactive mode offers reuse or removal. `--force` removes it and rebuilds from the archives; this deletes all content under that deployment path. Back up any files you need first. In batch mode (`-y`), an existing deployment is reused unless `--force` is set.
 
-Without `--skip-qemu`, the script asks whether to enter a QEMU chroot at the end. In silent mode (`-y`) confirmations are accepted, so combine `-y` with `--skip-qemu` for a non-interactive deployment that should not open a chroot shell.
-
 In interactive mode, the script separately asks whether to run `apt-get update`, `apt-get upgrade -y`, and install the packages listed in `qemu-packages.txt` inside the target rootfs. The default list contains `mc` and `vim`; use one Debian package name per line, with blank lines and `#` comments allowed. Select a different list with `--apt-packages-file PATH` or `JETSON_APT_PACKAGES_FILE`.
 
 For a non-interactive run, opt into the APT operation explicitly with `--apt-upgrade` or `JETSON_APT_UPGRADE=1`. Combine it with `-y --skip-qemu` to update and configure the rootfs without opening an interactive shell:
@@ -121,6 +122,8 @@ For a non-interactive run, opt into the APT operation explicitly with `--apt-upg
 
 Without that opt-in, batch mode does not run APT updates. The APT operation uses non-interactive `apt-get` flags and stops if package-list validation or any APT command fails.
 
+After the APT prompt/action, interactive mode asks whether to enter the QEMU chroot shell unless `--skip-qemu` is set. In silent mode (`-y`) the shell is entered automatically unless skipped, so combine `-y --skip-qemu --apt-upgrade` for a fully automated APT update without opening a shell. UART root autologin is applied after both optional steps, even if an optional step fails.
+
 ### Default user and root UART login
 
 The script runs NVIDIA's `tools/l4t_create_default_user.sh` before setting UART login behavior. By default, it installs a systemd getty drop-in that enables passwordless root login on `ttyTCU0` for debugging. Disable or remove this setting by adding the flag to your deployment command, for example:
@@ -130,7 +133,7 @@ The script runs NVIDIA's `tools/l4t_create_default_user.sh` before setting UART 
   --board jetson-agx-orin-devkit-noeeprom --skip-qemu --no-root-uart-login
 ```
 
-This option is applied after user creation and the optional QEMU step. Passwordless root access is intended for controlled development hardware; turn it off for deployed devices.
+This option is applied after user creation and both optional QEMU/APT steps. Passwordless root access is intended for controlled development hardware; turn it off for deployed devices.
 
 ## 4. Prepare and flash the board
 

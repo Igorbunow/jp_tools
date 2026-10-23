@@ -16,6 +16,10 @@ assert_contains "$out" 'Debian patches: enabled'
 assert_contains "$out" 'Rootfs apt update/upgrade (batch): disabled'
 assert_contains "$out" "APT package list: $REPO_DIR/qemu-packages.txt"
 
+
+out="$(bash "$SETUP" --force-qemu-cleanup --print-paths 2>&1)"
+assert_contains "$out" "Deployment base directory: $DEFAULT_DIR"
+
 out="$(JETSON_APT_UPGRADE=1 bash "$SETUP" --print-paths 2>&1)"
 assert_contains "$out" 'Rootfs apt update/upgrade (batch): enabled'
 
