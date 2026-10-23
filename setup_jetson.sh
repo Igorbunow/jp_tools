@@ -12,6 +12,8 @@ source "$PROJECT_DIR/lib/qemu_resolv.sh"
 source "$PROJECT_DIR/lib/qemu_apt.sh"
 # shellcheck source=lib/root_uart.sh
 source "$PROJECT_DIR/lib/root_uart.sh"
+# shellcheck source=lib/rootfs_release_fixes.sh
+source "$PROJECT_DIR/lib/rootfs_release_fixes.sh"
 # shellcheck source=lib/qemu_chroot.sh
 source "$PROJECT_DIR/lib/qemu_chroot.sh"
 # shellcheck source=lib/qemu_session.sh
@@ -192,7 +194,7 @@ confirm() {
 }
 
 check_dependencies() {
-    local deps=("pv" "tar" "sudo" "df" "awk" "setpriv" "flock" "mountpoint" "umount" "ps")
+    local deps=("pv" "tar" "sudo" "df" "awk" "setpriv" "flock" "mountpoint" "umount" "ps" "patch")
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
             echo -e "${RED}Error: required command '$dep' is not installed.${NC}"
@@ -363,6 +365,25 @@ apply_debian_patches() {
     sudo "$PROJECT_DIR/setup_debian.sh" --board "$JETSON_BOARD" --version "${L4T_VERSION_SELECTED}" --l4t-dir "$TARGET_DIR"
 }
 
+apply_rootfs_release_fixes() {
+    local rootfs_path="$TARGET_DIR/rootfs"
+    update_step "Applying rootfs fixes for JetPack $JETPACK_VERSION"
+    rootfs_fix_read_os_release "$rootfs_path/etc/os-release" || {
+        print_error "Cannot identify target rootfs distribution from etc/os-release."
+        return 1
+    }
+    rootfs_fix_normalize_nvidia_soc "$rootfs_path" "$TARGET_DIR/$JETSON_BOARD.conf" || return 1
+    rootfs_fix_apply_layers "$rootfs_path" "$PROJECT_DIR/rootfs-fixes" \
+        "$JETPACK_VERSION" "$ROOTFS_FIX_OS_ID" "$ROOTFS_FIX_CODENAME" || return 1
+    print_notice "Rootfs release-specific fixes applied (or no matching fix was required)."
+}
+
+write_rootfs_image_identity() {
+    update_step "Writing rootfs image identity"
+    rootfs_fix_write_identity "$TARGET_DIR/rootfs" "$JETPACK_VERSION" \
+        "$L4T_VERSION_SELECTED" "$JETSON_BOARD"
+}
+
 begin_qemu_session() {
     local rootfs_path="$1"
     local interactive=true
@@ -507,6 +528,8 @@ update_rootfs_packages() {
         update_step "Updating rootfs system packages"
         qemu_apt_upgrade_install "$rootfs_path"
         status=$?
+    else
+        update_step "Updating rootfs system packages (skipped: repository validation failed)"
     fi
     update_step "Unmounting QEMU rootfs resources"
     cleanup_qemu_rootfs "$rootfs_path"
@@ -599,6 +622,9 @@ if [ -d "$TARGET_DIR" ]; then
     else
         apply_debian_patches || exit 1
     fi
+    if [[ -d "$TARGET_DIR/rootfs" ]]; then
+        apply_rootfs_release_fixes || exit 1
+    fi
     echo -e "\n${GREEN}Preparation complete. After powering on the board and confirming Recovery mode, run:${NC}"
     echo "  cd \"$TARGET_DIR\" && sudo ./flash.sh $JETSON_BOARD mmcblk0p1"
 fi
@@ -627,6 +653,10 @@ fi
 
 # Apply UART login last, after user creation, APT updates, and any QEMU session.
 if [[ -d "$TARGET_DIR/rootfs" ]]; then
+    write_rootfs_image_identity || {
+        print_error "Failed to write rootfs image identity."
+        POST_SETUP_FAILED=true
+    }
     if configure_root_uart_login "$TARGET_DIR/rootfs" "$ROOT_UART_AUTOLOGIN"; then
         update_step "$ROOT_UART_MESSAGE"
         if [[ "$ROOT_UART_AUTOLOGIN" == true ]]; then

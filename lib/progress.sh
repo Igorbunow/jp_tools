@@ -12,6 +12,7 @@ jetson_calculate_total_steps() {
     fi
     [[ "$run_apt" == true ]] && total=$((total + 5))
     [[ "$run_qemu" == true ]] && total=$((total + 4))
-    [[ "$has_rootfs" == true ]] && total=$((total + 1))
+    # Rootfs finalization always has release-fix, image-identity, and UART stages.
+    [[ "$has_rootfs" == true ]] && total=$((total + 3))
     printf '%s\n' "$total"
 }

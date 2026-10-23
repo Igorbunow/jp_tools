@@ -13,7 +13,7 @@
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  git pv tar bzip2 sudo util-linux \
+  git pv tar bzip2 sudo util-linux patch \
   abootimg xmlstarlet gdisk parted cpio gzip binutils \
   sshpass openssh-client
 ```
@@ -27,6 +27,7 @@ sudo apt-get install -y \
 | `tar`, `bzip2` | Распаковывают релизные архивы NVIDIA `.tbz2`. |
 | `sudo` | Запускает операции настройки L4T, привилегированные файловые команды и прошивку. |
 | `util-linux` | Предоставляет `setpriv`, который очищает дополнительные группы хоста перед входом в rootfs chroot. |
+| `patch` | Применяет необязательные релизные патчи rootfs из `rootfs-fixes/`. |
 | `abootimg`, `xmlstarlet`, `gdisk`, `parted`, `cpio`, `gzip` | Утилиты хоста, проверяемые `setup_debian.sh` для генерации recovery-образа L4T. Команда `sgdisk` входит в пакет `gdisk`. |
 | `binutils` | Предоставляет команду `strings`, используемую инструментами L4T. |
 | `sshpass`, `openssh-client` | SSH-утилиты, необходимые скриптам L4T; `ssh-keygen` входит в `openssh-client`. |
@@ -90,6 +91,10 @@ Tegra_Linux_Sample-Root-Filesystem_R36.5.2_aarch64.tbz2
 Если не задавать `--version`, выбирается самая новая согласованная пара архивов L4T и rootfs. Если не задавать `--jetpack-version`, используется имя каталога, в котором лежит `setup_jetson.sh`. Если репозиторий склонирован в каталог общего назначения, например `jp_tools`, передавайте `--jetpack-version` явно.
 
 По умолчанию каталог архивов и базовый каталог развёртывания равны `/opt/nvidia/jp/6.2.3`, поэтому BSP будет находиться в `/opt/nvidia/jp/6.2.3/Linux_for_Tegra`. Для раздельного хранения задайте `--archive-dir PATH` и `--deploy-dir PATH` (или `JETSON_ARCHIVE_DIR` и `JETSON_DEPLOY_DIR`). Если указан только один из путей, он используется для обоих. Старый параметр `--dir PATH` остаётся алиасом `--deploy-dir`. Команда `./setup_jetson.sh --print-paths` показывает выбранные каталоги без развёртывания. Ресурсы проекта `root_fs/`, `b_conf/` и `setup_debian.sh` всегда берутся из репозитория. Скрипт распаковывает L4T и rootfs, запускает `apply_binaries.sh`, создаёт пользователя, копирует overlay, при наличии распаковывает публичные исходники, устанавливает выбранный пакет `b_conf` и применяет исправления для Debian.
+
+Перед проверкой APT скрипт заменяет оставшийся токен NVIDIA-репозитория `<SOC>` по выбранному конфигу платы (или по файлу управления загрузкой rootfs, если он уже существует). Это исправляет релизы, где NVIDIA откладывает подстановку до первой загрузки. Релизные исправления rootfs можно добавлять в [`rootfs-fixes/`](../rootfs-fixes/README.md): они выбираются по JetPack, ID дистрибутива и codename. В `/etc/jetson-image-info` записываются версии JetPack/L4T, дистрибутив и профиль платы.
+
+В Ubuntu Noble пустые каталоги `bin.usr-is-merged`, `lib.usr-is-merged` и `sbin.usr-is-merged` относятся к переходу `base-files` на usr-merge. Это штатные пути пакета, а не временные артефакты setup; удалять или объединять их вручную не нужно. Ubuntu указывает `usr-is-merged` как виртуальный пакет, предоставляемый `base-files` ([индекс пакетов](https://packages.ubuntu.com/noble/usr-is-merged)).
 
 Патчи совместимости Debian по умолчанию накладываются всегда. Если версия хостовой системы поддерживается инструментами NVIDIA, этот шаг можно вручную пропустить параметром `--skip-debian-patches` или переменной `JETSON_SKIP_DEBIAN_PATCHES=1`. Для переменной допустимы только значения `0` (по умолчанию — применять патчи) и `1` (пропустить). Скрипт не определяет ОС автоматически и сам выбор не меняет. Например:
 

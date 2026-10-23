@@ -7,6 +7,7 @@ QEMU_APT_REPOSITORY_BACKUP_DIR=""
 QEMU_APT_REPOSITORY_BACKUP_ROOTFS=""
 QEMU_APT_REPOSITORY_OS_ID=""
 QEMU_APT_REPOSITORY_ATTEMPTS=""
+QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE=false
 
 qemu_apt_validate_force_repositories() {
     case "$1" in
@@ -415,19 +416,36 @@ qemu_apt_commit_repository_sources() {
 
 qemu_apt_run_repository_update() {
     local rootfs_path="$1"
-    qemu_apt_run_in_rootfs "$rootfs_path" \
-        apt-get -o APT::Update::Error-Mode=any update
+    local output_file status uri
+    QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE=false
+    output_file="$(mktemp /tmp/jetson-apt-update.XXXXXX)" || return 1
+    if qemu_apt_run_in_rootfs "$rootfs_path" apt-get -o APT::Update::Error-Mode=any update >"$output_file" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    cat -- "$output_file"
+    while IFS= read -r uri; do
+        if qemu_apt_uri_is_official "${QEMU_APT_REPOSITORY_OS_ID:-}" "$uri"; then
+            QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE=true
+            break
+        fi
+    done < <(grep -E '(^Err:|Failed to fetch )' "$output_file" | grep -Eo 'https?://[^[:space:]]+' || true)
+    rm -f -- "$output_file"
+    return "$status"
 }
 
 qemu_apt_update_with_fallback() {
     local rootfs_path="$1"
     local profile_root="$2"
     local force_custom="$3"
-    local status initial_status profile_path="" os_id=""
+    local status initial_status profile_path="" os_id="" official_failure=false
 
     QEMU_APT_FAILED_STEP=""
     QEMU_APT_EXIT_STATUS=0
     QEMU_APT_REPOSITORY_ATTEMPTS="current sources"
+    qemu_apt_read_os_id "$rootfs_path/etc/os-release" || true
+    os_id="$QEMU_APT_REPOSITORY_OS_ID"
 
     if qemu_apt_run_repository_update "$rootfs_path"; then
         return 0
@@ -435,8 +453,7 @@ qemu_apt_update_with_fallback() {
         initial_status=$?
     fi
 
-    qemu_apt_read_os_id "$rootfs_path/etc/os-release" || true
-    os_id="$QEMU_APT_REPOSITORY_OS_ID"
+    official_failure="$QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE"
 
     if [[ "$force_custom" == true || "$force_custom" == 1 ]]; then
         profile_path="$(qemu_apt_resolve_profile "$rootfs_path/etc/os-release" "$profile_root" 2>/dev/null || true)"
@@ -456,6 +473,7 @@ qemu_apt_update_with_fallback() {
                     return 0
                 else
                     status=$?
+                    [[ "$QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE" == true ]] && official_failure=true
                 fi
                 qemu_apt_restore_repository_sources "$rootfs_path" || {
                     QEMU_APT_FAILED_STEP="repository rollback"
@@ -471,7 +489,7 @@ qemu_apt_update_with_fallback() {
         fi
     fi
 
-    if [[ "$os_id" == ubuntu || "$os_id" == debian ]]; then
+    if [[ ( "$os_id" == ubuntu || "$os_id" == debian ) && "$official_failure" == true ]]; then
         printf 'Trying official archive repositories for %s.\n' "$os_id"
         QEMU_APT_REPOSITORY_ATTEMPTS+=" -> $os_id official archive"
         if qemu_apt_stage_repository_candidate "$rootfs_path" archive ""; then
@@ -497,8 +515,10 @@ qemu_apt_update_with_fallback() {
             status=$?
         fi
         printf 'Official archive validation failed (status %s).\n' "$status"
-    else
+    elif [[ "$os_id" != ubuntu && "$os_id" != debian ]]; then
         printf 'No automatic archive fallback is defined for %s.\n' "${os_id:-unknown distribution}"
+    else
+        printf 'No failed official %s repository was detected; preserving configured sources.\n' "$os_id"
     fi
 
     QEMU_APT_FAILED_STEP="apt-get update"

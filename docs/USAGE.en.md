@@ -13,7 +13,7 @@ Install the packages used by the setup and Debian compatibility scripts:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  git pv tar bzip2 sudo util-linux \
+  git pv tar bzip2 sudo util-linux patch \
   abootimg xmlstarlet gdisk parted cpio gzip binutils \
   sshpass openssh-client
 ```
@@ -27,6 +27,7 @@ If `sudo` is not installed yet, run `apt-get` as root (for example, from `su -`)
 | `tar`, `bzip2` | Extracts NVIDIA `.tbz2` release archives. |
 | `sudo` | Runs L4T setup, privileged file operations, and flashing. |
 | `util-linux` | Provides `setpriv`, used to clear host supplementary groups before entering the rootfs chroot. |
+| `patch` | Applies optional release-specific rootfs patches stored under `rootfs-fixes/`. |
 | `abootimg`, `xmlstarlet`, `gdisk`, `parted`, `cpio`, `gzip` | Host tools checked by `setup_debian.sh` for L4T recovery-image generation. The `sgdisk` command is provided by `gdisk`. |
 | `binutils` | Provides the `strings` command used by L4T tooling. |
 | `sshpass`, `openssh-client` | Host SSH utilities expected by the L4T scripts; `ssh-keygen` is provided by `openssh-client`. |
@@ -90,6 +91,14 @@ Version options are different:
 If `--version` is omitted, the newest matching L4T/rootfs archive pair is selected. If `--jetpack-version` is omitted, the script uses the name of the directory containing `setup_jetson.sh`. When the repository is cloned into a generic directory such as `jp_tools`, pass `--jetpack-version` explicitly.
 
 The default archive directory and deployment base directory are both `/opt/nvidia/jp/6.2.3`, producing `/opt/nvidia/jp/6.2.3/Linux_for_Tegra`. Set `--archive-dir PATH` and `--deploy-dir PATH` (or `JETSON_ARCHIVE_DIR` and `JETSON_DEPLOY_DIR`) to use separate locations. If only one is set, it becomes the shared path for both. The legacy `--dir PATH` remains an alias for `--deploy-dir`. `./setup_jetson.sh --print-paths` displays the resolved paths without starting deployment. Project resources such as `root_fs/`, `b_conf/`, and `setup_debian.sh` are always taken from the repository. The setup script extracts L4T and rootfs, runs `apply_binaries.sh`, creates the requested default user, copies the overlay, optionally extracts public sources, installs the selected `b_conf` payload, then applies Debian compatibility patches to the chosen L4T tree.
+
+Before rootfs APT validation, setup normalizes a remaining NVIDIA repository `<SOC>` token from the selected board configuration (or the rootfs boot-control file if available). This covers releases where NVIDIA defers that substitution until first boot. Release-specific rootfs overlays can be added under [`rootfs-fixes/`](../rootfs-fixes/README.md), layered by JetPack selector, distribution ID, and codename. The resulting rootfs gets `/etc/jetson-image-info` with JetPack, L4T, distribution, and board-profile details.
+
+On Ubuntu Noble, empty `bin.usr-is-merged`, `lib.usr-is-merged`, and `sbin.usr-is-merged` directories are part of the `base-files` usr-merge transition. They are expected package-managed paths, not temporary setup artifacts; keep them as shipped. Ubuntu lists `usr-is-merged` as a virtual package provided by `base-files` ([package index](https://packages.ubuntu.com/noble/usr-is-merged)).
+
+Before rootfs APT validation, setup normalizes a remaining NVIDIA repository `<SOC>` token from the selected board configuration (or the rootfs boot-control file if available). This covers releases where NVIDIA defers that substitution until first boot. Release-specific rootfs overlays can be added under [`rootfs-fixes/`](../rootfs-fixes/README.md), layered by JetPack selector, distribution ID, and codename. The resulting rootfs gets `/etc/jetson-image-info` with JetPack, L4T, distribution, and board-profile details.
+
+On Ubuntu Noble, empty `bin.usr-is-merged`, `lib.usr-is-merged`, and `sbin.usr-is-merged` directories are part of the `base-files` usr-merge transition. They are expected package-managed paths, not temporary setup artifacts; keep them as shipped. Ubuntu lists `usr-is-merged` as a virtual package provided by `base-files` ([package index](https://packages.ubuntu.com/noble/usr-is-merged)).
 
 Debian compatibility patches are applied by default. When running on a host release that supports NVIDIA's tools, you can manually skip this step with `--skip-debian-patches` or `JETSON_SKIP_DEBIAN_PATCHES=1`. The environment variable accepts only `0` (default, apply patches) or `1` (skip). The script does not detect the host OS or change this choice automatically. For example:
 

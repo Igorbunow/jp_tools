@@ -257,6 +257,14 @@ if [[ "$*" =~ apt-get.*[[:space:]]update($|[[:space:]]) ]]; then
     IFS=, read -r -a results <<< "${JETSON_TEST_APT_UPDATE_RESULTS:-0}"
     result_index=$((count - 1))
     if ((result_index >= ${#results[@]})); then result_index=$((${#results[@]} - 1)); fi
+    IFS=, read -r -a diagnostics <<< "${JETSON_TEST_APT_UPDATE_DIAGNOSTICS:-none}"
+    diagnostic="${diagnostics[$result_index]:-${diagnostics[-1]:-none}}"
+    case "$diagnostic" in
+        ubuntu) printf 'Err:1 http://ports.ubuntu.com/ubuntu-ports noble InRelease\n' ;;
+        debian) printf 'Err:1 http://deb.debian.org/debian bookworm InRelease\n' ;;
+        nvidia) printf 'Err:1 https://repo.download.nvidia.com/jetson/common r39.2 InRelease\n' ;;
+        none) ;;
+    esac
     exit "${results[$result_index]}"
 fi
 case "${1:-}" in
@@ -266,6 +274,7 @@ EOF
 chmod +x "$fixture/bin/sudo"
 export JETSON_TEST_APT_UPDATE_COUNT_FILE="$fixture/apt-update-count"
 export JETSON_TEST_APT_UPDATE_RESULTS=0
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=none
 
 qemu_apt_update_with_fallback "$fallback_rootfs" "$profile_root" false
 [[ "$(cat "$JETSON_TEST_APT_UPDATE_COUNT_FILE")" == 1 ]] || {
@@ -278,6 +287,7 @@ diff -ru "$fixture/fallback-original" "$fallback_sources" >/dev/null || {
 rm -f "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
 : > "$JETSON_TEST_LOG"
 export JETSON_TEST_APT_UPDATE_RESULTS=42,0
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=nvidia,none
 qemu_apt_update_with_fallback "$fallback_rootfs" "$profile_root" true
 [[ "$(cat "$JETSON_TEST_APT_UPDATE_COUNT_FILE")" == 2 ]] || {
     echo 'FAIL: opted-in custom repository profile was not retried after source failure' >&2; exit 1;
@@ -297,6 +307,7 @@ cp -a "$fixture/fallback-original" "$fallback_sources"
 rm -f "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
 : > "$JETSON_TEST_LOG"
 export JETSON_TEST_APT_UPDATE_RESULTS=42,43,0
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=ubuntu,ubuntu,none
 qemu_apt_update_with_fallback "$fallback_rootfs" "$profile_root" true
 [[ "$(cat "$JETSON_TEST_APT_UPDATE_COUNT_FILE")" == 3 ]] || {
     echo 'FAIL: failed custom source profile did not fall through to the archive attempt' >&2; exit 1;
@@ -313,6 +324,7 @@ cp -a "$fixture/fallback-original" "$fallback_sources"
 rm -f "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
 : > "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
 export JETSON_TEST_APT_UPDATE_RESULTS=42,43
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=ubuntu,ubuntu
 if qemu_apt_update_with_fallback "$fallback_rootfs" "$profile_root" false; then
     echo 'FAIL: unavailable baseline and archive sources were reported as successful' >&2; exit 1;
 fi
@@ -327,6 +339,7 @@ rm -rf "$fallback_sources"
 cp -a "$fixture/fallback-original" "$fallback_sources"
 rm -f "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
 export JETSON_TEST_APT_UPDATE_RESULTS=42,0
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=ubuntu,none
 qemu_apt_update_with_fallback "$fallback_rootfs" "$fixture/empty-profiles" true
 [[ "$(cat "$JETSON_TEST_APT_UPDATE_COUNT_FILE")" == 2 ]] || {
     echo 'FAIL: missing custom profile did not proceed to the archive candidate' >&2; exit 1;
@@ -340,6 +353,7 @@ cp -a "$fixture/fallback-original" "$fallback_sources"
 printf 'ID=myapt\nVERSION_CODENAME=stable\n' > "$fallback_rootfs/etc/os-release"
 rm -f "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
 export JETSON_TEST_APT_UPDATE_RESULTS=42
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=nvidia
 if qemu_apt_update_with_fallback "$fallback_rootfs" "$fixture/empty-profiles" false; then
     echo 'FAIL: non-Ubuntu/Debian source failure was reported as successful' >&2; exit 1;
 fi
@@ -355,11 +369,15 @@ cp -a "$fixture/fallback-original" "$fallback_sources"
 printf 'ID=ubuntu\nVERSION_CODENAME=noble\n' > "$fallback_rootfs/etc/os-release"
 rm -f "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
 export JETSON_TEST_APT_UPDATE_RESULTS=42,55
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=nvidia,nvidia
 if qemu_apt_update_with_fallback "$fallback_rootfs" "$fixture/empty-profiles" false; then
     echo 'FAIL: failure from the preserved NVIDIA source was ignored' >&2; exit 1;
 fi
-[[ "$QEMU_APT_EXIT_STATUS" -eq 55 ]] || {
+[[ "$QEMU_APT_EXIT_STATUS" -eq 42 ]] || {
     echo 'FAIL: final third-party repository failure status was not preserved' >&2; exit 1;
+}
+[[ "$(cat "$JETSON_TEST_APT_UPDATE_COUNT_FILE")" == 1 ]] || {
+    echo 'FAIL: NVIDIA-only repository error incorrectly triggered Ubuntu archive fallback' >&2; exit 1;
 }
 grep -Fq 'repo.download.nvidia.com/jetson/common' "$fallback_sources/sources.list" || {
     echo 'FAIL: failed fallback altered the NVIDIA source' >&2; exit 1;
