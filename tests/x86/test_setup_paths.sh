@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+assert_contains() { [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2"; }
+SETUP="$REPO_DIR/setup_jetson.sh"
+DEFAULT_DIR=/opt/nvidia/jp/6.2.3
+
+out="$(env -u JETSON_ARCHIVE_DIR -u JETSON_DEPLOY_DIR bash "$SETUP" --print-paths 2>&1 || true)"
+assert_contains "$out" "Archive directory: $DEFAULT_DIR"
+assert_contains "$out" "Deployment base directory: $DEFAULT_DIR"
+assert_contains "$out" "L4T directory: $DEFAULT_DIR/Linux_for_Tegra"
+
+out="$(env -u JETSON_DEPLOY_DIR JETSON_ARCHIVE_DIR=/tmp/jetson-archives bash "$SETUP" --print-paths 2>&1 || true)"
+assert_contains "$out" 'Archive directory: /tmp/jetson-archives'
+assert_contains "$out" 'Deployment base directory: /tmp/jetson-archives'
+
+out="$(env -u JETSON_ARCHIVE_DIR JETSON_DEPLOY_DIR=/tmp/jetson-output bash "$SETUP" --print-paths 2>&1 || true)"
+assert_contains "$out" 'Archive directory: /tmp/jetson-output'
+assert_contains "$out" 'Deployment base directory: /tmp/jetson-output'
+
+out="$(env JETSON_ARCHIVE_DIR=/tmp/jetson-archives JETSON_DEPLOY_DIR=/tmp/jetson-output bash "$SETUP" --print-paths 2>&1 || true)"
+assert_contains "$out" 'Archive directory: /tmp/jetson-archives'
+assert_contains "$out" 'Deployment base directory: /tmp/jetson-output'
+
+out="$(env JETSON_ARCHIVE_DIR=/tmp/old-archives JETSON_DEPLOY_DIR=/tmp/old-output bash "$SETUP" \
+    --archive-dir /tmp/cli-archives --deploy-dir /tmp/cli-output --print-paths 2>&1 || true)"
+assert_contains "$out" 'Archive directory: /tmp/cli-archives'
+assert_contains "$out" 'Deployment base directory: /tmp/cli-output'
+
+out="$(bash "$SETUP" --archive-dir /tmp/shared-location --print-paths 2>&1 || true)"
+assert_contains "$out" 'Archive directory: /tmp/shared-location'
+assert_contains "$out" 'Deployment base directory: /tmp/shared-location'
+
+fixture="$(mktemp -d /tmp/jetson-paths.XXXXXX)"
+trap 'rm -rf -- "$fixture"' EXIT
+if out="$(bash "$REPO_DIR/setup_debian.sh" --board demo --l4t-dir "$fixture/deployed/Linux_for_Tegra" 2>&1)"; then
+    fail 'setup_debian unexpectedly accepted an empty L4T directory'
+fi
+assert_contains "$out" "$fixture/deployed/Linux_for_Tegra/tools/ota_tools/version_upgrade/ota_make_recovery_img_dtb.sh"
+
+printf 'PASS: setup path defaults, environment/CLI overrides, and setup_debian L4T path\n'
