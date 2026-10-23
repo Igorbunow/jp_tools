@@ -36,7 +36,7 @@ sudo apt-get install -y \
 
 ## Quick start
 
-Clone this repository and put the matching NVIDIA archives in its root directory. Specify both the JetPack version used to select a profile and, optionally, the exact L4T archive release:
+Clone this repository. By default, matching NVIDIA archives are read from `/opt/nvidia/jp/6.2.3` and the BSP is deployed there. Specify both the JetPack version used to select a profile and, optionally, the exact L4T archive release:
 
 ```bash
 ./setup_jetson.sh \
@@ -45,6 +45,8 @@ Clone this repository and put the matching NVIDIA archives in its root directory
   --board jetson-agx-orin-devkit-noeeprom \
   --skip-qemu
 ```
+
+To keep downloads and deployment separate, use `--archive-dir` and `--deploy-dir` (or `JETSON_ARCHIVE_DIR` and `JETSON_DEPLOY_DIR`). If only one is set, it is used for both; if neither is set, both use `/opt/nvidia/jp/6.2.3`. Project resources such as `b_conf/` and `root_fs/` remain in the repository. See the detailed guide for examples.
 
 The archive names must be `Jetson_Linux_R36.5.2_aarch64.tbz2` and `Tegra_Linux_Sample-Root-Filesystem_R36.5.2_aarch64.tbz2` for this example. Use the exact version tokens present in your downloaded filenames. If `--version` is omitted, the script selects the newest matching archive pair.
 
@@ -57,6 +59,8 @@ Before flashing, inspect the profile and confirm that the board is in USB Recove
   --mode full \
   --jetpack-version 6.2.3
 ```
+
+When the BSP is deployed elsewhere, pass `--deploy-dir PATH` or set `JETSON_DEPLOY_DIR`; `--l4t-dir PATH` selects the exact `Linux_for_Tegra` directory.
 
 The flashing utility asks for confirmation before writing. `--yes` is available for unattended use and bypasses that confirmation; use it only when the target and Recovery state have already been verified.
 

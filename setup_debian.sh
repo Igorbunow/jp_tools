@@ -2,26 +2,32 @@
 set -euo pipefail
 
 # Run from the project root even when invoked by absolute or relative path.
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CALLER_DIR="$PWD"
+cd "$PROJECT_DIR"
 
 BOARD="jetson-agx-orin-devkit"
 VERSION=""
+L4T_DIR="${JETSON_L4T_DIR:-}"
 while (($#)); do
     case "$1" in
         --board) BOARD="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
+        --l4t-dir) L4T_DIR="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
-PATCH_FILE="Linux_for_Tegra/tools/ota_tools/version_upgrade/ota_make_recovery_img_dtb.sh"
-PY_FLASH_INTERNAL="Linux_for_Tegra/bootloader/tegraflash_internal.py"
-RCM_BINARY="Linux_for_Tegra/bootloader/tegrarcm_v2"
-SOURCE_RCM="debian_patches/bootloader/tegrarcm_v2"
-BOARD_CONF="Linux_for_Tegra/${BOARD}.conf"
+if [[ -z "$L4T_DIR" ]]; then L4T_DIR="$PROJECT_DIR/Linux_for_Tegra"; fi
+[[ "$L4T_DIR" = /* ]] || L4T_DIR="$CALLER_DIR/$L4T_DIR"
+L4T_DIR="$(realpath -m -- "$L4T_DIR")"
+PATCH_FILE="$L4T_DIR/tools/ota_tools/version_upgrade/ota_make_recovery_img_dtb.sh"
+PY_FLASH_INTERNAL="$L4T_DIR/bootloader/tegraflash_internal.py"
+RCM_BINARY="$L4T_DIR/bootloader/tegrarcm_v2"
+SOURCE_RCM="$PROJECT_DIR/debian_patches/bootloader/tegrarcm_v2"
+BOARD_CONF="$L4T_DIR/${BOARD}.conf"
 MB2_BCT_NAME="tegra234-mb2-bct-misc-ids-10g-no-cvb-eeprom.dts"
-MB2_BCT_DIR="Linux_for_Tegra/bootloader/generic/BCT"
+MB2_BCT_DIR="$L4T_DIR/bootloader/generic/BCT"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -178,7 +184,7 @@ fix_usb_autosuspend() {
     fi
 }
 
-[[ -f "$PATCH_FILE" ]] || fail "expected Linux_for_Tegra tree beside setup_debian.sh"
+[[ -f "$PATCH_FILE" ]] || fail "L4T recovery script not found: $PATCH_FILE (set --l4t-dir or JETSON_L4T_DIR)"
 [[ -f "$BOARD_CONF" ]] || fail "board profile not found: $BOARD_CONF"
 
 # The historical custom RCM/BCT and manual recovery prompt apply only to the

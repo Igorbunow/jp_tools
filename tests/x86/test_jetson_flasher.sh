@@ -43,6 +43,12 @@ bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-versio
 assert_contains "$(cat "$JETSON_TEST_LOG")" './flash.sh demo mmcblk0p1'
 [[ -f "$fixture/Linux_for_Tegra/profile.dat" ]] || fail "selected payload was not installed"
 
+mkdir -p "$fixture/alternate-bsp"
+cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/alternate-bsp/flash.sh"
+: > "$JETSON_TEST_LOG"
+bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/alternate-bsp"
+[[ -f "$fixture/alternate-bsp/profile.dat" ]] || fail "--l4t-dir deployment target was ignored"
+
 : > "$JETSON_TEST_LOG"
 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode rootfs --rootdev mmcblk1p1 --jetpack-version 6.2.3 --yes
 assert_contains "$(cat "$JETSON_TEST_LOG")" './flash.sh -k APP demo mmcblk1p1'
@@ -58,6 +64,12 @@ out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode dtb --jetpack-
 assert_contains "$out" 'A_kernel-dtb'
 assert_contains "$out" 'B_kernel-dtb'
 [[ ! -s "$JETSON_TEST_LOG" ]] || fail "dry-run invoked sudo"
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --l4t-dir "$fixture/alternate-bsp")"
+assert_contains "$out" "$fixture/alternate-bsp"
+mkdir -p "$fixture/deploy-env/Linux_for_Tegra"
+cp "$fixture/alternate-bsp/flash.sh" "$fixture/deploy-env/Linux_for_Tegra/flash.sh"
+out="$(JETSON_DEPLOY_DIR="$fixture/deploy-env" bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run)"
+assert_contains "$out" "$fixture/deploy-env/Linux_for_Tegra"
 
 if bash "$fixture/b_conf/flash_jetson.sh" --board missing --mode full --jetpack-version 6.2.3 --yes >/dev/null 2>&1; then
     fail "unknown profile unexpectedly accepted"

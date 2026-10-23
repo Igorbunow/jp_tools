@@ -51,7 +51,7 @@ this repository.
 
 ## 2. Get the NVIDIA release files
 
-Download the L4T Driver Package and Sample Root Filesystem for the **same L4T release**. Place both `.tbz2` files in the directory containing `setup_jetson.sh`:
+Download the L4T Driver Package and Sample Root Filesystem for the **same L4T release**. By default, place both `.tbz2` files in `/opt/nvidia/jp/6.2.3`:
 
 ```text
 Jetson_Linux_<L4T-release>_aarch64.tbz2
@@ -65,7 +65,7 @@ Jetson_Linux_R36.5.2_aarch64.tbz2
 Tegra_Linux_Sample-Root-Filesystem_R36.5.2_aarch64.tbz2
 ```
 
-Use the filenames supplied by NVIDIA for your target release. The scripts do not download NVIDIA archives. `public_sources.tbz2` is optional and is extracted only if you place it beside the setup script under that exact name.
+Use the filenames supplied by NVIDIA for your target release. The scripts do not download NVIDIA archives. `public_sources.tbz2` is optional and is extracted only if present in the archive directory under that exact name.
 
 ## 3. Deploy an L4T tree
 
@@ -86,7 +86,16 @@ Version options are different:
 
 If `--version` is omitted, the newest matching L4T/rootfs archive pair is selected. If `--jetpack-version` is omitted, the script uses the name of the directory containing `setup_jetson.sh`. When the repository is cloned into a generic directory such as `jp_tools`, pass `--jetpack-version` explicitly.
 
-The default deployment directory is `./Linux_for_Tegra`; change it with `--dir PATH`. The script extracts L4T and rootfs, runs `apply_binaries.sh`, creates the requested default user, copies `root_fs/`, optionally extracts public sources, installs the selected `b_conf` payload, then applies Debian compatibility patches.
+The default archive directory and deployment base directory are both `/opt/nvidia/jp/6.2.3`, producing `/opt/nvidia/jp/6.2.3/Linux_for_Tegra`. Set `--archive-dir PATH` and `--deploy-dir PATH` (or `JETSON_ARCHIVE_DIR` and `JETSON_DEPLOY_DIR`) to use separate locations. If only one is set, it becomes the shared path for both. The legacy `--dir PATH` remains an alias for `--deploy-dir`. `./setup_jetson.sh --print-paths` displays the resolved paths without starting deployment. Project resources such as `root_fs/`, `b_conf/`, and `setup_debian.sh` are always taken from the repository. The setup script extracts L4T and rootfs, runs `apply_binaries.sh`, creates the requested default user, copies the overlay, optionally extracts public sources, installs the selected `b_conf` payload, then applies Debian compatibility patches to the chosen L4T tree.
+
+Example with separate storage:
+
+```bash
+./setup_jetson.sh --archive-dir /srv/jetson/downloads --deploy-dir /opt/nvidia/jp/6.2.3 \
+  --jetpack-version 6.2.3 --version R36.5.2 --skip-qemu
+```
+
+`setup_debian.sh` accepts `--l4t-dir PATH` (or `JETSON_L4T_DIR`) for a direct path to the target `Linux_for_Tegra`. `b_conf/flash_jetson.sh` accepts the same `--l4t-dir`, or `--deploy-dir PATH` to select `PATH/Linux_for_Tegra`; it also honors `JETSON_L4T_DIR` and `JETSON_DEPLOY_DIR`.
 
 If `Linux_for_Tegra` already exists, interactive mode offers reuse or removal. `--force` removes it and rebuilds from the archives; this deletes all content under that deployment path. Back up any files you need first. In batch mode (`-y`), an existing deployment is reused unless `--force` is set.
 

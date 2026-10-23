@@ -1,21 +1,24 @@
 #!/bin/bash
 
-# Сохраняем абсолютный путь к директории с архивами
-ARCHIVE_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Project resources stay beside this script; release archives and deployment
+# output can be stored independently.
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_SHARED_DIR="/opt/nvidia/jp/6.2.3"
+ARCHIVE_DIR="${JETSON_ARCHIVE_DIR:-}"
+DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 
 # Параметры по умолчанию
 JETSON_USER="${JETSON_USER:-nvidia}"
 JETSON_PASS="${JETSON_PASS:-nvidia}"
 JETSON_HOST="${JETSON_HOST:-nvidia-agx-orin}"
-DEPLOY_BASE_DIR="."
 SILENT_MODE=false
 FORCE_DELETE=false
 SKIP_QEMU=false
 ROOT_UART_AUTOLOGIN=true
 JETSON_BOARD="${JETSON_BOARD:-jetson-agx-orin-devkit-noeeprom}"
 L4T_VERSION="${L4T_VERSION:-}"
-JETPACK_VERSION="${JETPACK_VERSION:-$(basename "$ARCHIVE_DIR")}" 
-JETPACK_VERSION="${JETPACK_VERSION% }"
+JETPACK_VERSION="${JETPACK_VERSION:-}"
+PRINT_PATHS=false
 
 # Release archives are selected as a matching pair, so R36.4.x (JetPack 6.2.2)
 # and R36.5.x (JetPack 6.2.3) deployments both work from this directory.
@@ -31,20 +34,24 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 usage() {
-    echo "Использование: $0 [OPTIONS]"
+    echo "Usage: $0 [OPTIONS]"
     echo "Options:"
     echo "  -u, --user <name>      Имя пользователя (default: nvidia)"
     echo "  -p, --pass <pass>      Пароль (default: nvidia)"
     echo "  -n, --host <name>      Имя хоста (default: nvidia-agx-orin)"
-    echo "  -d, --dir <path>       Базовый путь для развертывания (default: .)"
+    echo "  --archive-dir <path>   Каталог с архивами NVIDIA"
+    echo "  --deploy-dir <path>    Базовый каталог развёртывания (создаёт Linux_for_Tegra/)"
+    echo "  -d, --dir <path>       Алиас для --deploy-dir"
+    echo "                         Default shared path: $DEFAULT_SHARED_DIR"
+    echo "  --print-paths          Показать выбранные пути и выйти"
     echo "  -y, --yes              Тихий режим (пакетный режим)"
     echo "  -f, --force            Принудительное удаление старой установки"
     echo "  --skip-qemu            Пропустить этап QEMU chroot"
     echo "  --version <version>    Версия L4T (по умолчанию последняя полная пара)"
     echo "  --board <name>         Имя профиля flash.sh (default: jetson-agx-orin-devkit-noeeprom)"
-    echo "  --jetpack-version <v>  Версия для выбора b_conf (по умолчанию имя каталога setup_jetson.sh)"
+    echo "  --jetpack-version <v>  Версия для выбора b_conf (по умолчанию имя каталога архивов)"
     echo "  --no-root-uart-login   Отключить root autologin на UART (default: включён)"
-    exit 1
+    exit 0
 }
 
 # Parse arguments
@@ -53,7 +60,10 @@ while [[ $# -gt 0 ]]; do
         -u|--user) JETSON_USER="$2"; shift 2 ;;
         -p|--pass) JETSON_PASS="$2"; shift 2 ;;
         -n|--host) JETSON_HOST="$2"; shift 2 ;;
+        --archive-dir) ARCHIVE_DIR="$2"; shift 2 ;;
+        --deploy-dir) DEPLOY_BASE_DIR="$2"; shift 2 ;;
         -d|--dir) DEPLOY_BASE_DIR="$2"; shift 2 ;;
+        --print-paths) PRINT_PATHS=true; shift ;;
         -y|--yes) SILENT_MODE=true; shift ;;
         -f|--force) FORCE_DELETE=true; shift ;;
         --skip-qemu) SKIP_QEMU=true; shift ;;
@@ -65,10 +75,35 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Приводим базовый путь к абсолютному
-DEPLOY_BASE_DIR="$(mkdir -p "$DEPLOY_BASE_DIR" && cd "$DEPLOY_BASE_DIR" && pwd)"
+if [[ -z "$ARCHIVE_DIR" && -z "$DEPLOY_BASE_DIR" ]]; then
+    ARCHIVE_DIR="$DEFAULT_SHARED_DIR"
+    DEPLOY_BASE_DIR="$DEFAULT_SHARED_DIR"
+elif [[ -z "$ARCHIVE_DIR" ]]; then
+    ARCHIVE_DIR="$DEPLOY_BASE_DIR"
+elif [[ -z "$DEPLOY_BASE_DIR" ]]; then
+    DEPLOY_BASE_DIR="$ARCHIVE_DIR"
+fi
+
+ARCHIVE_DIR="$(realpath -m -- "$ARCHIVE_DIR")"
+DEPLOY_BASE_DIR="$(realpath -m -- "$DEPLOY_BASE_DIR")"
 TARGET_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
-LOCAL_ROOTFS_OVERLAY="$ARCHIVE_DIR/$LOCAL_ROOTFS_OVERLAY_NAME"
+LOCAL_ROOTFS_OVERLAY="$PROJECT_DIR/$LOCAL_ROOTFS_OVERLAY_NAME"
+JETPACK_VERSION="${JETPACK_VERSION:-$(basename -- "$ARCHIVE_DIR")}"
+JETPACK_VERSION="${JETPACK_VERSION% }"
+
+if [[ "$PRINT_PATHS" == true ]]; then
+    printf 'Project resources: %s\n' "$PROJECT_DIR"
+    printf 'Archive directory: %s\n' "$ARCHIVE_DIR"
+    printf 'Deployment base directory: %s\n' "$DEPLOY_BASE_DIR"
+    printf 'L4T directory: %s\n' "$TARGET_DIR"
+    printf 'JetPack version: %s\n' "$JETPACK_VERSION"
+    exit 0
+fi
+
+[[ -d "$ARCHIVE_DIR" ]] || { echo -e "${RED}Ошибка: каталог архивов не найден: $ARCHIVE_DIR${NC}" >&2; exit 1; }
+mkdir -p -- "$DEPLOY_BASE_DIR"
+DEPLOY_BASE_DIR="$(cd -- "$DEPLOY_BASE_DIR" && pwd)"
+TARGET_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
 
 confirm() {
     if [ "$SILENT_MODE" = true ]; then return 0; fi
@@ -214,7 +249,7 @@ deploy_system() {
 }
 
 copy_board_configuration() {
-    local board_dir="$ARCHIVE_DIR/$LOCAL_BOARD_CONFIG_NAME"
+    local board_dir="$PROJECT_DIR/$LOCAL_BOARD_CONFIG_NAME"
     local bundle_dir payload
     [[ -d "$TARGET_DIR" ]] || { echo -e "${RED}Ошибка: L4T не развернут в $TARGET_DIR${NC}" >&2; return 1; }
     [[ -f "$board_dir/select_config.sh" ]] || { echo -e "${RED}Селектор b_conf не найден: $board_dir/select_config.sh${NC}" >&2; return 1; }
@@ -235,12 +270,12 @@ copy_board_configuration() {
 }
 
 apply_debian_patches() {
-    [[ -x "$ARCHIVE_DIR/setup_debian.sh" ]] || {
-        echo -e "${RED}Ошибка: Bash-патчер $ARCHIVE_DIR/setup_debian.sh не найден или не исполняемый${NC}" >&2
+    [[ -x "$PROJECT_DIR/setup_debian.sh" ]] || {
+        echo -e "${RED}Ошибка: Bash-патчер $PROJECT_DIR/setup_debian.sh не найден или не исполняемый${NC}" >&2
         return 1
     }
     update_step "Применение патчей совместимости L4T"
-    sudo "$ARCHIVE_DIR/setup_debian.sh" --board "$JETSON_BOARD" --version "${L4T_VERSION_SELECTED}"
+    sudo "$PROJECT_DIR/setup_debian.sh" --board "$JETSON_BOARD" --version "${L4T_VERSION_SELECTED}" --l4t-dir "$TARGET_DIR"
 }
 
 configure_root_uart_login() {

@@ -5,7 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 B_CONF_DIR="$SCRIPT_DIR"
-L4T_DIR="$REPO_DIR/Linux_for_Tegra"
+L4T_DIR="${JETSON_L4T_DIR:-}"
+DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-$(basename -- "$REPO_DIR")}"
 BOARD=""
 MODE=""
@@ -23,6 +24,8 @@ Options:
   --board PROFILE              Board profile (also accepted: --profile).
   --mode MODE                  full, dtb (write A then B), or rootfs (APP only).
   --jetpack-version VERSION    Override version inferred from the parent directory.
+  --l4t-dir PATH               Use this exact Linux_for_Tegra directory.
+  --deploy-dir PATH            Use PATH/Linux_for_Tegra as the deployment.
   --rootdev DEVICE             flash.sh root device (default: mmcblk0p1).
   --yes                        Confirm BSP changes and destructive flash in batch mode.
   --dry-run                    Print planned file copies and flash commands only.
@@ -45,6 +48,8 @@ while (($#)); do
         --board|--profile) (($# >= 2)) || die "$1 requires a value"; BOARD="$2"; shift 2 ;;
         --mode) (($# >= 2)) || die "$1 requires a value"; MODE="$2"; shift 2 ;;
         --jetpack-version) (($# >= 2)) || die "$1 requires a value"; JETPACK_VERSION="$2"; shift 2 ;;
+        --l4t-dir) (($# >= 2)) || die "$1 requires a value"; L4T_DIR="$2"; shift 2 ;;
+        --deploy-dir) (($# >= 2)) || die "$1 requires a value"; DEPLOY_BASE_DIR="$2"; shift 2 ;;
         --rootdev) (($# >= 2)) || die "$1 requires a value"; ROOTDEV="$2"; shift 2 ;;
         --yes|-y) ASSUME_YES=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
@@ -52,6 +57,13 @@ while (($#)); do
         *) die "unknown option: $1 (use --help)" ;;
     esac
 done
+
+if [[ -n "$DEPLOY_BASE_DIR" && -z "$L4T_DIR" ]]; then
+    L4T_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
+fi
+L4T_DIR="${L4T_DIR:-$REPO_DIR/Linux_for_Tegra}"
+[[ "$L4T_DIR" = /* ]] || L4T_DIR="$PWD/$L4T_DIR"
+L4T_DIR="$(realpath -m -- "$L4T_DIR")"
 
 [[ -x "$L4T_DIR/flash.sh" ]] || die "flash.sh not found under $L4T_DIR"
 [[ -f "$B_CONF_DIR/select_config.sh" ]] || die "b_conf/select_config.sh not found"
