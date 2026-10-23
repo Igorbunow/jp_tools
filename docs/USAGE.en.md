@@ -34,7 +34,7 @@ If `sudo` is not installed yet, run `apt-get` as root (for example, from `su -`)
 
 ### Optional QEMU chroot
 
-The optional chroot stage needs `qemu-user-static`. `setup_jetson.sh` installs it automatically if the stage is selected and the `qemu-aarch64-static` binary is missing. Use `--skip-qemu` to skip the stage. Before entering the chroot, the script checks the temporary rootfs `/etc/resolv.conf`; if it has no active `nameserver` line, it adds `8.8.8.8` and `1.1.1.1`. Override these fallback addresses with a whitespace-separated `JETSON_QEMU_NAMESERVERS` value, for example `JETSON_QEMU_NAMESERVERS="9.9.9.9 149.112.112.112"`. An existing nameserver entry is preserved as-is.
+The optional chroot stage needs `qemu-user-static`. `setup_jetson.sh` installs it automatically if the stage is selected and the `qemu-aarch64-static` binary is missing. Use `--skip-qemu` to skip the interactive shell. Before entering the chroot or starting an APT operation, the script checks the temporary rootfs `/etc/resolv.conf`; if it has no active `nameserver` line, it adds `8.8.8.8` and `1.1.1.1`. Override these fallback addresses with a whitespace-separated `JETSON_QEMU_NAMESERVERS` value, for example `JETSON_QEMU_NAMESERVERS="9.9.9.9 149.112.112.112"`. An existing nameserver entry is preserved as-is.
 
 ### Optional OP-TEE warning-suppression build
 
@@ -108,6 +108,18 @@ Example with separate storage:
 If `Linux_for_Tegra` already exists, interactive mode offers reuse or removal. `--force` removes it and rebuilds from the archives; this deletes all content under that deployment path. Back up any files you need first. In batch mode (`-y`), an existing deployment is reused unless `--force` is set.
 
 Without `--skip-qemu`, the script asks whether to enter a QEMU chroot at the end. In silent mode (`-y`) confirmations are accepted, so combine `-y` with `--skip-qemu` for a non-interactive deployment that should not open a chroot shell.
+
+In interactive mode, the script separately asks whether to run `apt-get update`, `apt-get upgrade -y`, and install the packages listed in `qemu-packages.txt` inside the target rootfs. The default list contains `mc` and `vim`; use one Debian package name per line, with blank lines and `#` comments allowed. Select a different list with `--apt-packages-file PATH` or `JETSON_APT_PACKAGES_FILE`.
+
+For a non-interactive run, opt into the APT operation explicitly with `--apt-upgrade` or `JETSON_APT_UPGRADE=1`. Combine it with `-y --skip-qemu` to update and configure the rootfs without opening an interactive shell:
+
+```bash
+./setup_jetson.sh -y --skip-qemu --apt-upgrade \
+  --apt-packages-file ./qemu-packages.txt \
+  --jetpack-version 6.2.3 --version R36.5.2
+```
+
+Without that opt-in, batch mode does not run APT updates. The APT operation uses non-interactive `apt-get` flags and stops if package-list validation or any APT command fails.
 
 ### Default user and root UART login
 

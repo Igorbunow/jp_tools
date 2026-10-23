@@ -8,6 +8,8 @@ ARCHIVE_DIR="${JETSON_ARCHIVE_DIR:-}"
 DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 # shellcheck source=lib/qemu_resolv.sh
 source "$PROJECT_DIR/lib/qemu_resolv.sh"
+# shellcheck source=lib/qemu_apt.sh
+source "$PROJECT_DIR/lib/qemu_apt.sh"
 
 # Параметры по умолчанию
 JETSON_USER="${JETSON_USER:-nvidia}"
@@ -22,11 +24,18 @@ JETSON_BOARD="${JETSON_BOARD:-jetson-agx-orin-devkit-noeeprom}"
 L4T_VERSION="${L4T_VERSION:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-}"
 PRINT_PATHS=false
+APT_UPGRADE_BATCH=false
+APT_PACKAGES_FILE="${JETSON_APT_PACKAGES_FILE:-$PROJECT_DIR/qemu-packages.txt}"
 
 case "${JETSON_SKIP_DEBIAN_PATCHES:-0}" in
     1) SKIP_DEBIAN_PATCHES=true ;;
     0) ;;
     *) echo "JETSON_SKIP_DEBIAN_PATCHES must be 0 or 1" >&2; exit 2 ;;
+esac
+case "${JETSON_APT_UPGRADE:-0}" in
+    1) APT_UPGRADE_BATCH=true ;;
+    0) ;;
+    *) echo "JETSON_APT_UPGRADE must be 0 or 1" >&2; exit 2 ;;
 esac
 
 # Release archives are selected as a matching pair, so R36.4.x (JetPack 6.2.2)
@@ -55,8 +64,11 @@ usage() {
     echo "  --print-paths          Показать выбранные пути и выйти"
     echo "  -y, --yes              Тихий режим (пакетный режим)"
     echo "  -f, --force            Принудительное удаление старой установки"
-    echo "  --skip-qemu            Пропустить этап QEMU chroot"
+    echo "  --skip-qemu            Пропустить интерактивную оболочку QEMU"
     echo "  JETSON_QEMU_NAMESERVERS=... DNS-серверы для rootfs без nameserver (default: 8.8.8.8 1.1.1.1)"
+    echo "  --apt-upgrade          В пакетном режиме обновить rootfs через apt"
+    echo "  --apt-packages-file <path> Файл пакетов (default: $APT_PACKAGES_FILE)"
+    echo "  JETSON_APT_UPGRADE=1   Включить apt update/upgrade в пакетном режиме"
     echo "  --skip-debian-patches  Не запускать setup_debian.sh"
     echo "  --version <version>    Версия L4T (по умолчанию последняя полная пара)"
     echo "  --board <name>         Имя профиля flash.sh (default: jetson-agx-orin-devkit-noeeprom)"
@@ -78,6 +90,8 @@ while [[ $# -gt 0 ]]; do
         -y|--yes) SILENT_MODE=true; shift ;;
         -f|--force) FORCE_DELETE=true; shift ;;
         --skip-qemu) SKIP_QEMU=true; shift ;;
+        --apt-upgrade) APT_UPGRADE_BATCH=true; shift ;;
+        --apt-packages-file) APT_PACKAGES_FILE="${2:?--apt-packages-file requires a path}"; shift 2 ;;
         --skip-debian-patches) SKIP_DEBIAN_PATCHES=true; shift ;;
         --no-root-uart-login) ROOT_UART_AUTOLOGIN=false; shift ;;
         --version) L4T_VERSION="$2"; shift 2 ;;
@@ -98,6 +112,8 @@ fi
 
 ARCHIVE_DIR="$(realpath -m -- "$ARCHIVE_DIR")"
 DEPLOY_BASE_DIR="$(realpath -m -- "$DEPLOY_BASE_DIR")"
+[[ "$APT_PACKAGES_FILE" = /* ]] || APT_PACKAGES_FILE="$PWD/$APT_PACKAGES_FILE"
+APT_PACKAGES_FILE="$(realpath -m -- "$APT_PACKAGES_FILE")"
 TARGET_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
 LOCAL_ROOTFS_OVERLAY="$PROJECT_DIR/$LOCAL_ROOTFS_OVERLAY_NAME"
 JETPACK_VERSION="${JETPACK_VERSION:-$(basename -- "$ARCHIVE_DIR")}"
@@ -114,6 +130,12 @@ if [[ "$PRINT_PATHS" == true ]]; then
     else
         printf 'Debian patches: enabled\n'
     fi
+    if [[ "$APT_UPGRADE_BATCH" == true ]]; then
+        printf 'Rootfs apt update/upgrade (batch): enabled\n'
+    else
+        printf 'Rootfs apt update/upgrade (batch): disabled\n'
+    fi
+    printf 'APT package list: %s\n' "$APT_PACKAGES_FILE"
     exit 0
 fi
 
@@ -313,21 +335,25 @@ EOF
     fi
 }
 
-setup_qemu_chroot() {
-    local rootfs_path="$TARGET_DIR/rootfs"
-    echo -e "${GREEN}=== Вход в QEMU Chroot ===${NC}"
+prepare_qemu_rootfs() {
+    local rootfs_path="$1"
     
     if ! command -v qemu-aarch64-static &> /dev/null; then
         echo "Установка qemu-user-static на хост..."
-        sudo apt-get update && sudo apt-get install -y qemu-user-static
+        sudo apt-get update && sudo apt-get install -y qemu-user-static || return 1
     fi
     
-    sudo cp /usr/bin/qemu-aarch64-static "$rootfs_path/usr/bin/"
+    sudo cp /usr/bin/qemu-aarch64-static "$rootfs_path/usr/bin/" || return 1
 
     # Save the rootfs resolver, then use the host resolver for the temporary
     # chroot session. Add fallback DNS only when it has no active nameserver.
-    [ -f "$rootfs_path/etc/resolv.conf" ] && sudo mv "$rootfs_path/etc/resolv.conf" "$rootfs_path/etc/resolv.conf.bak"
-    sudo cp /etc/resolv.conf "$rootfs_path/etc/resolv.conf"
+    if [[ -f "$rootfs_path/etc/resolv.conf" ]]; then
+        sudo mv "$rootfs_path/etc/resolv.conf" "$rootfs_path/etc/resolv.conf.bak" || return 1
+    fi
+    if ! sudo cp /etc/resolv.conf "$rootfs_path/etc/resolv.conf"; then
+        [[ -f "$rootfs_path/etc/resolv.conf.bak" ]] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
+        return 1
+    fi
     if ! qemu_ensure_nameservers "$rootfs_path/etc/resolv.conf"; then
         sudo rm -f "$rootfs_path/etc/resolv.conf"
         [ -f "$rootfs_path/etc/resolv.conf.bak" ] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
@@ -335,26 +361,56 @@ setup_qemu_chroot() {
     fi
     
     echo "Монтирование ресурсов..."
-    sudo mount -t proc /proc "$rootfs_path/proc"
-    sudo mount -t sysfs /sys "$rootfs_path/sys"
-    sudo mount --bind /dev "$rootfs_path/dev"
-    sudo mount --bind /dev/pts "$rootfs_path/dev/pts"
+    if ! sudo mount -t proc /proc "$rootfs_path/proc" || \
+       ! sudo mount -t sysfs /sys "$rootfs_path/sys" || \
+       ! sudo mount --bind /dev "$rootfs_path/dev" || \
+       ! sudo mount --bind /dev/pts "$rootfs_path/dev/pts"; then
+        cleanup_qemu_rootfs "$rootfs_path"
+        return 1
+    fi
+}
+
+cleanup_qemu_rootfs() {
+    local rootfs_path="$1"
+
+    sudo umount "$rootfs_path/dev/pts" 2>/dev/null || true
+    sudo umount "$rootfs_path/dev" 2>/dev/null || true
+    sudo umount "$rootfs_path/sys" 2>/dev/null || true
+    sudo umount "$rootfs_path/proc" 2>/dev/null || true
+    sudo rm -f "$rootfs_path/etc/resolv.conf"
+    [ -f "$rootfs_path/etc/resolv.conf.bak" ] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
+}
+
+setup_qemu_chroot() {
+    local rootfs_path="$TARGET_DIR/rootfs"
+    local status
+    echo -e "${GREEN}=== Вход в QEMU Chroot ===${NC}"
+    prepare_qemu_rootfs "$rootfs_path" || return 1
     
     echo -e "${GREEN}Вход в окружение (с подавлением ошибок локалей)...${NC}"
     # Запускаем chroot с чистыми переменными локали
     sudo chroot "$rootfs_path" /usr/bin/env LANG=C LC_ALL=C LANGUAGE=C /bin/bash
+    status=$?
 
     echo "Размонтирование ресурсов..."
-    sudo umount "$rootfs_path/proc" || true
-    sudo umount "$rootfs_path/sys" || true
-    sudo umount "$rootfs_path/dev/pts" || true
-    sudo umount "$rootfs_path/dev" || true
-    
-    # Восстановление resolv.conf
-    sudo rm "$rootfs_path/etc/resolv.conf"
-    [ -f "$rootfs_path/etc/resolv.conf.bak" ] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
-    
+    cleanup_qemu_rootfs "$rootfs_path"
     echo -e "${GREEN}Завершено.${NC}"
+    return "$status"
+}
+
+update_rootfs_packages() {
+    local rootfs_path="$TARGET_DIR/rootfs"
+    local status
+
+    qemu_apt_load_packages "$APT_PACKAGES_FILE" || return 1
+    printf 'Updating rootfs and installing packages from %s: %s\n' \
+        "$APT_PACKAGES_FILE" "${QEMU_APT_PACKAGES[*]:-(no extra packages)}"
+    echo -e "${GREEN}=== Обновление rootfs через APT ===${NC}"
+    prepare_qemu_rootfs "$rootfs_path" || return 1
+    qemu_apt_run_update_upgrade "$rootfs_path"
+    status=$?
+    cleanup_qemu_rootfs "$rootfs_path"
+    return "$status"
 }
 
 # --- Начало выполнения ---
@@ -416,8 +472,18 @@ if [ "$SKIP_QEMU" = false ]; then
     fi
 fi
 
-# Must remain the final rootfs mutation: l4t_create_default_user.sh and an
-# optional QEMU session can alter the image, so configure UART login last.
+if [[ -d "$TARGET_DIR/rootfs" ]]; then
+    if [[ "$SILENT_MODE" == true ]]; then
+        if [[ "$APT_UPGRADE_BATCH" == true ]]; then
+            update_rootfs_packages || exit 1
+        fi
+    elif confirm "Выполнить apt update/upgrade rootfs и установить пакеты из $APT_PACKAGES_FILE?"; then
+        update_rootfs_packages || exit 1
+    fi
+fi
+
+# Must remain the final rootfs mutation: user creation, the optional QEMU shell,
+# and APT updates can alter the image, so configure UART login last.
 if [[ -d "$TARGET_DIR/rootfs" ]]; then
     configure_root_uart_login
 fi

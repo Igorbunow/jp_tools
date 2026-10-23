@@ -13,6 +13,17 @@ assert_contains "$out" "Archive directory: $DEFAULT_DIR"
 assert_contains "$out" "Deployment base directory: $DEFAULT_DIR"
 assert_contains "$out" "L4T directory: $DEFAULT_DIR/Linux_for_Tegra"
 assert_contains "$out" 'Debian patches: enabled'
+assert_contains "$out" 'Rootfs apt update/upgrade (batch): disabled'
+assert_contains "$out" "APT package list: $REPO_DIR/qemu-packages.txt"
+
+out="$(JETSON_APT_UPGRADE=1 bash "$SETUP" --print-paths 2>&1)"
+assert_contains "$out" 'Rootfs apt update/upgrade (batch): enabled'
+
+out="$(JETSON_APT_UPGRADE=0 bash "$SETUP" --apt-upgrade --print-paths 2>&1)"
+assert_contains "$out" 'Rootfs apt update/upgrade (batch): enabled'
+
+out="$(bash "$SETUP" --apt-packages-file ./custom-packages.txt --print-paths 2>&1)"
+assert_contains "$out" "APT package list: $PWD/custom-packages.txt"
 
 out="$(JETSON_SKIP_DEBIAN_PATCHES=1 bash "$SETUP" --print-paths 2>&1)"
 assert_contains "$out" 'Debian patches: skipped'
