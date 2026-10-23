@@ -7,9 +7,35 @@ fixture="$(mktemp -d /tmp/jetson-apt.XXXXXX)"
 trap 'rm -rf -- "$fixture"' EXIT
 
 mkdir -p "$fixture/bin"
+mkdir -p "$fixture/rootfs/usr/share/pam-configs"
+cat > "$fixture/rootfs/usr/share/pam-configs/nv-power-adapter-check" <<'EOF'
+
+# NVIDIA header that pam-auth-update misparses before its first field.
+# A second comment line exercises removal of the complete leading preamble.
+Name: NVIDIA power adapter check
+Default: yes
+Priority: 0
+Session-Type: Additional
+Session:
+\toptional pam_exec.so /usr/sbin/nv_pam_power_adapter_checker.sh
+EOF
 cat > "$fixture/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$JETSON_TEST_LOG"
+if [[ "$1" == chroot && "$3" == /usr/bin/env ]]; then
+    rootfs_path="$2"
+    shift 3
+    while [[ "$1" == *=* ]]; do shift; done
+    if [[ "$1" == /bin/sh ]]; then
+        profile="$rootfs_path/usr/share/pam-configs/nv-power-adapter-check"
+        temporary="${profile}.test-tmp"
+        awk '!started && /^[[:space:]]*$/ { next } !started && /^[[:space:]]*#/ { next } { started=1; print }' \
+            "$profile" > "$temporary" && cat "$temporary" > "$profile"
+        status=$?
+        rm -f "$temporary"
+        exit "$status"
+    fi
+fi
 EOF
 chmod +x "$fixture/bin/sudo"
 export PATH="$fixture/bin:$PATH"
@@ -33,13 +59,21 @@ EOF
 
 qemu_apt_load_packages "$packages"
 qemu_apt_run_update_upgrade "$fixture/rootfs"
-[[ "$(wc -l < "$JETSON_TEST_LOG")" -eq 3 ]] || {
-    echo 'FAIL: expected apt update, upgrade, and install commands' >&2; exit 1;
+[[ "$(head -n 1 "$fixture/rootfs/usr/share/pam-configs/nv-power-adapter-check")" == 'Name: NVIDIA power adapter check' ]] || {
+    echo 'FAIL: malformed leading comments were not removed from the NVIDIA PAM profile' >&2; exit 1;
+}
+[[ "$(grep -c 'apt-get' "$JETSON_TEST_LOG")" -eq 3 ]] || {
+    echo 'FAIL: expected PAM profile preparation and apt update, upgrade, and install commands' >&2; exit 1;
+}
+grep -Fq 'pam-configs/nv-power-adapter-check' "$JETSON_TEST_LOG" || {
+    echo 'FAIL: NVIDIA PAM profile preparation did not run before APT' >&2; exit 1;
 }
 grep -Fq 'apt-get update' "$JETSON_TEST_LOG" || { echo 'FAIL: apt update missing' >&2; exit 1; }
+grep -Fq 'LANG=C LC_ALL=C LANGUAGE=C DEBIAN_FRONTEND=noninteractive apt-get update' "$JETSON_TEST_LOG" || { echo 'FAIL: APT update must use a generated locale-independent environment' >&2; exit 1; }
 grep -Fq 'apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade' "$JETSON_TEST_LOG" || {
     echo 'FAIL: non-interactive apt upgrade missing' >&2; exit 1;
 }
+grep -Fq 'LANG=C LC_ALL=C LANGUAGE=C DEBIAN_FRONTEND=noninteractive apt-get -y' "$JETSON_TEST_LOG" || { echo 'FAIL: APT upgrade/install must use a generated locale-independent environment' >&2; exit 1; }
 grep -Fq 'install mc vim' "$JETSON_TEST_LOG" || { echo 'FAIL: package list was not applied' >&2; exit 1; }
 
 : > "$JETSON_TEST_LOG"

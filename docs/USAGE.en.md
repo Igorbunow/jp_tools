@@ -35,7 +35,7 @@ If `sudo` is not installed yet, run `apt-get` as root (for example, from `su -`)
 
 ### Optional QEMU chroot
 
-The optional chroot stage needs `qemu-user-static`. `setup_jetson.sh` installs it automatically if the stage is selected and the `qemu-aarch64-static` binary is missing. Use `--skip-qemu` to skip the interactive shell. Before entering the chroot or starting an APT operation, the script checks the temporary rootfs `/etc/resolv.conf`; if it has no active `nameserver` line, it adds `8.8.8.8` and `1.1.1.1`. Override these fallback addresses with a whitespace-separated `JETSON_QEMU_NAMESERVERS` value, for example `JETSON_QEMU_NAMESERVERS="9.9.9.9 149.112.112.112"`. An existing nameserver entry is preserved as-is.
+The optional chroot stage needs `qemu-user-static`. `setup_jetson.sh` installs it automatically if the stage is selected and the `qemu-aarch64-static` binary is missing. Use `--skip-qemu` to skip the interactive shell. Before entering the chroot or starting an APT operation, the script checks the temporary rootfs `/etc/resolv.conf`; if it has no active `nameserver` line, it adds `8.8.8.8` and `1.1.1.1`. Override these fallback addresses with a whitespace-separated `JETSON_QEMU_NAMESERVERS` value, for example `JETSON_QEMU_NAMESERVERS="9.9.9.9 149.112.112.112"`. An existing nameserver entry is preserved as-is. APT commands always run with `LANG=C`, `LC_ALL=C`, and `LANGUAGE=C`, so they do not inherit a host locale that is missing from the target rootfs. Debian may still print `debconf: delaying package configuration, since apt-utils is not installed`; that message is informational and does not indicate an APT failure.
 
 QEMU APT and interactive sessions share a per-deployment lock and record the active phase. On a normal exit, APT failure, or handled signal, mounts and the original resolver are restored before the lock is released. If a previous run left a live session or cleanup artifacts, interactive mode asks before terminating/recovering it. Batch mode stops safely unless `--force-qemu-cleanup` is supplied; that flag permits termination of the recorded `setup_jetson.sh` process and cleanup of its rootfs mounts/resolver state. Do not use the flag while another setup run is intentionally active.
 
@@ -111,6 +111,8 @@ Example with separate storage:
 If `Linux_for_Tegra` already exists, interactive mode offers reuse or removal. `--force` removes it and rebuilds from the archives; this deletes all content under that deployment path. Back up any files you need first. In batch mode (`-y`), an existing deployment is reused unless `--force` is set.
 
 In interactive mode, the script separately asks whether to run `apt-get update`, `apt-get upgrade -y`, and install the packages listed in `qemu-packages.txt` inside the target rootfs. The default list contains `mc` and `vim`; use one Debian package name per line, with blank lines and `#` comments allowed. Select a different list with `--apt-packages-file PATH` or `JETSON_APT_PACKAGES_FILE`.
+
+Before APT runs, the script normalizes the leading blank lines and comments in NVIDIA's `nv-power-adapter-check` PAM profile. This avoids Perl warnings from `pam-auth-update` on profiles whose preamble it does not parse correctly.
 
 For a non-interactive run, opt into the APT operation explicitly with `--apt-upgrade` or `JETSON_APT_UPGRADE=1`. Combine it with `-y --skip-qemu` to update and configure the rootfs without opening an interactive shell:
 
