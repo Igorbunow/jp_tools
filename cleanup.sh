@@ -1,5 +1,17 @@
 #!/bin/bash
 
+if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
+    cat <<'EOF'
+Usage: ./cleanup.sh
+
+Reverts tracked changes and removes temporary ramdisk build artifacts from
+Linux_for_Tegra in the current directory.
+
+Environment variables: none.
+EOF
+    exit 0
+fi
+
 echo "Cleaning up temporary build artifacts..."
 
 # Clean Linux_for_Tegra directory using git if it exists

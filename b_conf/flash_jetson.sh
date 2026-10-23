@@ -7,7 +7,7 @@ REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 B_CONF_DIR="$SCRIPT_DIR"
 L4T_DIR="${JETSON_L4T_DIR:-}"
 DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
-JETPACK_VERSION="${JETPACK_VERSION:-$(basename -- "$REPO_DIR")}"
+JETPACK_VERSION="${JETPACK_VERSION:-}"
 BOARD=""
 MODE=""
 ROOTDEV="mmcblk0p1"
@@ -20,16 +20,22 @@ usage() {
 Usage: $0 [options]
 
 Options:
-  --list                       List profiles compatible with this BSP version.
+  --list                       List profiles compatible with the selected version (or common profiles if unknown).
   --board PROFILE              Board profile (also accepted: --profile).
   --mode MODE                  full, dtb (write A then B), or rootfs (APP only).
-  --jetpack-version VERSION    Override version inferred from the parent directory.
+  --jetpack-version VERSION    Select versioned profiles; defaults to a version-looking path component.
   --l4t-dir PATH               Use this exact Linux_for_Tegra directory.
   --deploy-dir PATH            Use PATH/Linux_for_Tegra as the deployment.
   --rootdev DEVICE             flash.sh root device (default: mmcblk0p1).
   --yes                        Confirm BSP changes and destructive flash in batch mode.
   --dry-run                    Print planned file copies and flash commands only.
   -h, --help                   Show this help.
+
+Environment variables:
+  JETSON_DEPLOY_DIR            Base deployment directory; uses PATH/Linux_for_Tegra.
+  JETSON_L4T_DIR               Exact Linux_for_Tegra directory (takes precedence).
+  JETPACK_VERSION              JetPack version used to resolve versioned profiles.
+  JETSON_USB_SYSFS_ROOT        USB sysfs root used for Recovery detection (default: /sys/bus/usb/devices).
 
 Without --board or --mode, an interactive terminal prompts for the missing choices.
 Examples:
@@ -65,6 +71,24 @@ L4T_DIR="${L4T_DIR:-$REPO_DIR/Linux_for_Tegra}"
 [[ "$L4T_DIR" = /* ]] || L4T_DIR="$PWD/$L4T_DIR"
 L4T_DIR="$(realpath -m -- "$L4T_DIR")"
 
+# Infer the version only from directory components that actually look like a
+# JetPack version. A deployment may have any name (for example /tmp/999nv),
+# and the repository directory name is not a reliable version source.
+if [[ -z "$JETPACK_VERSION" ]]; then
+    for version_candidate in "$(basename -- "$(dirname -- "$L4T_DIR")")" \
+                             "$(basename -- "$REPO_DIR")"; do
+        if [[ "$version_candidate" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            JETPACK_VERSION="$version_candidate"
+            break
+        fi
+    done
+fi
+VERSION_KNOWN=true
+if [[ -z "$JETPACK_VERSION" ]]; then
+    JETPACK_VERSION="unknown"
+    VERSION_KNOWN=false
+fi
+
 [[ -x "$L4T_DIR/flash.sh" ]] || die "flash.sh not found under $L4T_DIR"
 [[ -f "$B_CONF_DIR/select_config.sh" ]] || die "b_conf/select_config.sh not found"
 # shellcheck source=/dev/null
@@ -76,7 +100,12 @@ compatible_profiles() {
     while IFS= read -r candidate; do
         profile="${candidate##*/}"
         [[ -n "$profile" && -z "${seen[$profile]+x}" ]] || continue
-        bundle="$(b_conf_select_package "$B_CONF_DIR" "$profile" "$JETPACK_VERSION" 2>/dev/null)" || continue
+        if [[ "$VERSION_KNOWN" == true ]]; then
+            bundle="$(b_conf_select_package "$B_CONF_DIR" "$profile" "$JETPACK_VERSION" 2>/dev/null)" || continue
+        else
+            bundle="$B_CONF_DIR/common/$profile"
+            [[ -d "$bundle/Linux_for_Tegra" ]] || continue
+        fi
         [[ -f "$bundle/Linux_for_Tegra/$profile.conf" ]] || continue
         seen[$profile]="$bundle"
     done < <(find "$B_CONF_DIR" -mindepth 2 -maxdepth 2 -type d -print | LC_ALL=C sort)
@@ -87,10 +116,19 @@ compatible_profiles() {
 }
 
 mapfile -t PROFILE_ROWS < <(compatible_profiles)
-((${#PROFILE_ROWS[@]} > 0)) || die "no compatible board profiles for JetPack $JETPACK_VERSION"
+((${#PROFILE_ROWS[@]} > 0)) || {
+    if [[ "$VERSION_KNOWN" == true ]]; then
+        die "no compatible board profiles for JetPack $JETPACK_VERSION"
+    fi
+    die 'no common board profiles found; set JETPACK_VERSION or use --jetpack-version to select versioned profiles'
+}
 
 if [[ "$LIST_ONLY" == true ]]; then
-    printf 'Profiles compatible with JetPack %s:\n' "$JETPACK_VERSION"
+    if [[ "$VERSION_KNOWN" == true ]]; then
+        printf 'Profiles compatible with JetPack %s:\n' "$JETPACK_VERSION"
+    else
+        printf 'Common profiles (JetPack version unknown; set JETPACK_VERSION or --jetpack-version to include versioned profiles):\n'
+    fi
     for row in "${PROFILE_ROWS[@]}"; do
         IFS=$'\t' read -r profile bundle <<< "$row"
         printf '  %-48s %s\n' "$profile" "${bundle#"$REPO_DIR"/}"
@@ -167,7 +205,12 @@ if [[ -z "$BOARD" ]]; then
     has_tty || die 'specify --board in batch mode'
     select_profile_interactively
 else
-    SELECTED_BUNDLE="$(b_conf_select_package "$B_CONF_DIR" "$BOARD" "$JETPACK_VERSION")" || exit 1
+    if [[ "$VERSION_KNOWN" == true ]]; then
+        SELECTED_BUNDLE="$(b_conf_select_package "$B_CONF_DIR" "$BOARD" "$JETPACK_VERSION")" || exit 1
+    else
+        SELECTED_BUNDLE="$B_CONF_DIR/common/$BOARD"
+        [[ -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]] || die "profile '$BOARD' is not common; set JETPACK_VERSION or use --jetpack-version"
+    fi
     [[ -f "$SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf" ]] || die "profile config missing: $SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf"
 fi
 

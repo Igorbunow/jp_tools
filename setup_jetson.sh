@@ -92,6 +92,16 @@ usage() {
     echo "  --board <name>         flash.sh profile (default: jetson-agx-orin-devkit-noeeprom)"
     echo "  --jetpack-version <v>  b_conf selection version (default: archive directory name)"
     echo "  --no-root-uart-login   Disable root UART autologin (default: enabled)"
+    echo "  -h, --help             Show this help"
+    echo "Environment variables:"
+    echo "  JETSON_ARCHIVE_DIR, JETSON_DEPLOY_DIR  Archive and deployment base paths."
+    echo "  JETPACK_VERSION, L4T_VERSION          Select b_conf and matching L4T archives."
+    echo "  JETSON_BOARD, JETSON_USER, JETSON_PASS, JETSON_HOST  Board/default-user settings."
+    echo "  JETSON_SKIP_DEBIAN_PATCHES=0|1        Apply Debian patches (default) or skip them."
+    echo "  JETSON_APT_UPGRADE=0|1                 Enable batch rootfs apt update/upgrade."
+    echo "  JETSON_APT_PACKAGES_FILE               Package list for rootfs APT operations."
+    echo "  JETSON_FORCE_CUSTOM_REPOSITORIES=0|1   Allow custom repository profiles after APT errors."
+    echo "  JETSON_QEMU_NAMESERVERS                Space-separated rootfs DNS fallback servers."
     exit 0
 }
 
@@ -117,6 +127,7 @@ while [[ $# -gt 0 ]]; do
         --version) L4T_VERSION="$2"; shift 2 ;;
         --board) JETSON_BOARD="$2"; shift 2 ;;
         --jetpack-version) JETPACK_VERSION="$2"; shift 2 ;;
+        -h|--help) usage ;;
         *) usage ;;
     esac
 done

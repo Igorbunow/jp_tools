@@ -108,6 +108,25 @@ JETSON_SKIP_DEBIAN_PATCHES=1 ./setup_jetson.sh --jetpack-version 6.2.3 --version
 
 `setup_debian.sh` принимает `--l4t-dir PATH` (или `JETSON_L4T_DIR`) — точный путь к целевому `Linux_for_Tegra`. `b_conf/flash_jetson.sh` принимает такой же `--l4t-dir` либо `--deploy-dir PATH`, который указывает на `PATH/Linux_for_Tegra`; также поддерживаются переменные `JETSON_L4T_DIR` и `JETSON_DEPLOY_DIR`.
 
+### Переменные окружения
+
+Эти настройки также перечислены в выводе `--help` соответствующих скриптов:
+
+| Переменная | Скрипты | Назначение |
+| --- | --- | --- |
+| `JETSON_ARCHIVE_DIR`, `JETSON_DEPLOY_DIR` | `setup_jetson.sh` | Каталоги архивов и развёртывания. Если задан только один, он используется для обоих. |
+| `JETSON_L4T_DIR` | `setup_debian.sh`, `b_conf/flash_jetson.sh` | Точный каталог `Linux_for_Tegra`; параметр `--l4t-dir` имеет приоритет. |
+| `JETPACK_VERSION`, `L4T_VERSION` | `setup_jetson.sh` | Версия совместимости профиля платы и версия пары архивов L4T соответственно. |
+| `JETSON_BOARD`, `JETSON_USER`, `JETSON_PASS`, `JETSON_HOST` | `setup_jetson.sh` | Профиль платы, имя и пароль пользователя и имя хоста целевой системы. |
+| `JETSON_SKIP_DEBIAN_PATCHES` | `setup_jetson.sh` | Значение `1` пропускает host-патчи; по умолчанию `0`, патчи применяются. |
+| `JETSON_APT_UPGRADE`, `JETSON_APT_PACKAGES_FILE` | `setup_jetson.sh` | Включение пакетного APT-обновления rootfs и путь к списку пакетов. |
+| `JETSON_FORCE_CUSTOM_REPOSITORIES` | `setup_jetson.sh` | Значение `1` разрешает пользовательские APT-профили после ошибки проверки репозиториев. |
+| `JETSON_QEMU_NAMESERVERS` | `setup_jetson.sh` | DNS-серверы через пробел для добавления в `/etc/resolv.conf` rootfs при отсутствии nameserver. |
+| `JETSON_USB_SYSFS_ROOT` | `b_conf/flash_jetson.sh` | Каталог USB sysfs для обнаружения Recovery; по умолчанию `/sys/bus/usb/devices`. |
+| `CROSS_COMPILE_AARCH64_PATH`, `TMPDIR` | `b_conf/suppress_uefi_auth_warnings.sh` | Обязательный каталог Buildroot toolchain NVIDIA AArch64 и родитель временного каталога (по умолчанию `/tmp`). |
+
+`cleanup.sh` и `b_conf/select_config.sh` переменные окружения не используют. Если `flash_jetson.sh` не может извлечь версию JetPack из имени каталога развёртывания, он показывает и выбирает только профили `common/`. Чтобы включить версионные профили, задайте `JETPACK_VERSION` или параметр `--jetpack-version`.
+
 Если `Linux_for_Tegra` уже существует, интерактивный режим предложит использовать его повторно или удалить. Параметр `--force` удаляет каталог и выполняет развёртывание из архивов заново. Это удаляет всё содержимое указанного каталога развёртывания; заранее сохраните нужные файлы. В пакетном режиме (`-y`) существующее дерево будет использовано, если не указан `--force`.
 
 В интерактивном режиме скрипт отдельно спросит, нужно ли выполнить внутри целевого rootfs `apt-get update`, `apt-get upgrade -y` и установить пакеты из `qemu-packages.txt`. По умолчанию там указаны `mc` и `vim`; используйте по одному имени Debian-пакета на строку, пустые строки и комментарии с `#` разрешены. Другой файл можно выбрать через `--apt-packages-file PATH` или `JETSON_APT_PACKAGES_FILE`.
@@ -169,7 +188,7 @@ JETSON_SKIP_DEBIAN_PATCHES=1 ./setup_jetson.sh --jetpack-version 6.2.3 --version
 | `dtb` | Записывает `A_kernel-dtb`, затем `B_kernel-dtb`. |
 | `rootfs` | Записывает только раздел `APP`. |
 
-Корневое устройство по умолчанию — `mmcblk0p1`. Если конфигурация платы требует другого, задайте его через `--rootdev DEVICE`. Примеры:
+Корневое устройство по умолчанию — `mmcblk0p1`. Если конфигурация платы требует другого, задайте его через `--rootdev DEVICE`. `JETSON_DEPLOY_DIR` задаёт каталог `PATH/Linux_for_Tegra`, а `JETSON_L4T_DIR` — точный путь к BSP и имеет приоритет. Если версию определить не удалось, доступны только общие профили, если не задан `JETPACK_VERSION` или `--jetpack-version`. Примеры:
 
 ```bash
 ./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode full --jetpack-version 6.2.3

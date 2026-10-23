@@ -9,11 +9,26 @@ cd "$PROJECT_DIR"
 BOARD="jetson-agx-orin-devkit"
 VERSION=""
 L4T_DIR="${JETSON_L4T_DIR:-}"
+usage() {
+    cat <<EOF
+Usage: $0 [--board PROFILE] [--version L4T_VERSION] [--l4t-dir PATH]
+
+Options:
+  --board PROFILE       Board profile to patch (default: jetson-agx-orin-devkit).
+  --version VERSION     L4T release version used by version-specific fixes.
+  --l4t-dir PATH        Exact Linux_for_Tegra directory.
+  -h, --help            Show this help.
+
+Environment variables:
+  JETSON_L4T_DIR        Default exact Linux_for_Tegra directory; --l4t-dir overrides it.
+EOF
+}
 while (($#)); do
     case "$1" in
-        --board) BOARD="$2"; shift 2 ;;
-        --version) VERSION="$2"; shift 2 ;;
-        --l4t-dir) L4T_DIR="$2"; shift 2 ;;
+        --board) (($# >= 2)) || { echo "--board requires a value" >&2; exit 2; }; BOARD="$2"; shift 2 ;;
+        --version) (($# >= 2)) || { echo "--version requires a value" >&2; exit 2; }; VERSION="$2"; shift 2 ;;
+        --l4t-dir) (($# >= 2)) || { echo "--l4t-dir requires a value" >&2; exit 2; }; L4T_DIR="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done

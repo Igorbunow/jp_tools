@@ -23,6 +23,10 @@ Usage:
 --install  Build, validate, back up, then install the patched TOS image.
 --restore  Restore the original TOS image from its backup.
 --yes      Skip the confirmation prompt for install/restore.
+
+Environment variables:
+  CROSS_COMPILE_AARCH64_PATH  NVIDIA AArch64 Buildroot toolchain directory (required).
+  TMPDIR                      Temporary workspace parent (default: /tmp).
 EOF
 }
 

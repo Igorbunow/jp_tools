@@ -71,6 +71,19 @@ cp "$fixture/alternate-bsp/flash.sh" "$fixture/deploy-env/Linux_for_Tegra/flash.
 out="$(JETSON_DEPLOY_DIR="$fixture/deploy-env" bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run)"
 assert_contains "$out" "$fixture/deploy-env/Linux_for_Tegra"
 
+# A deployment directory can be named arbitrarily. When no version override is
+# provided, common profiles must still be discoverable without treating the
+# repository directory name as a JetPack version.
+out="$(JETSON_DEPLOY_DIR="$fixture/deploy-env" bash "$fixture/b_conf/flash_jetson.sh" --list)"
+assert_contains "$out" 'common/demo'
+
+mkdir -p "$fixture/b_conf/6.2.3/versioned/Linux_for_Tegra" "$fixture/versioned-deploy/6.2.3/Linux_for_Tegra"
+printf 'versioned config\n' > "$fixture/b_conf/6.2.3/versioned/Linux_for_Tegra/versioned.conf"
+cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/versioned-deploy/6.2.3/Linux_for_Tegra/flash.sh"
+out="$(JETSON_DEPLOY_DIR="$fixture/versioned-deploy/6.2.3" bash "$fixture/b_conf/flash_jetson.sh" --list)"
+assert_contains "$out" 'Profiles compatible with JetPack 6.2.3:'
+assert_contains "$out" 'versioned'
+
 if bash "$fixture/b_conf/flash_jetson.sh" --board missing --mode full --jetpack-version 6.2.3 --yes >/dev/null 2>&1; then
     fail "unknown profile unexpectedly accepted"
 fi
