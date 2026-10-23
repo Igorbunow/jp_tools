@@ -418,7 +418,7 @@ flash_jetson_exit_cleanup() {
     local exit_status=$?
     trap - EXIT
     if [[ -d "$L4T_DIR/bootloader" ]]; then
-        l4t_cleanup_bootloader_mount "$L4T_DIR/bootloader" || exit_status=1
+        l4t_cleanup_deployment_mounts "$L4T_DIR" || exit_status=1
     fi
     exit "$exit_status"
 }
@@ -446,7 +446,7 @@ for command in "${FLASH_COMMANDS[@]}"; do
     flash_status=0
     cleanup_status=0
     (cd -- "$L4T_DIR" && sudo "${flash_args[@]}") || flash_status=$?
-    l4t_cleanup_bootloader_mount "$L4T_DIR/bootloader" || cleanup_status=$?
+    l4t_cleanup_deployment_mounts "$L4T_DIR" || cleanup_status=$?
     ((cleanup_status == 0)) || die "failed to clean BSP mounts after: $command"
     ((flash_status == 0)) || die "flash command failed: $command"
 done

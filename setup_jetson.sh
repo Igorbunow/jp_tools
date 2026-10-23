@@ -571,7 +571,7 @@ setup_jetson_exit_cleanup() {
         fi
     fi
     if [[ -n "${TARGET_DIR:-}" && -d "$TARGET_DIR/bootloader" ]]; then
-        l4t_cleanup_bootloader_mount "$TARGET_DIR/bootloader" || exit_status=1
+        l4t_cleanup_deployment_mounts "$TARGET_DIR" || exit_status=1
     fi
     exit "$exit_status"
 }

@@ -50,3 +50,86 @@ l4t_cleanup_bootloader_mount() {
         fi
     done
 }
+
+# Unmount all mountpoints below one Linux_for_Tegra deployment, deepest-first.
+# The deployment directory itself is intentionally excluded because it may be
+# a user-managed filesystem containing the BSP rather than a BSP work mount.
+l4t_cleanup_deployment_mounts() {
+    local deployment_dir="${1%/}"
+    local targets encoded_target mount_path source longest_path
+    local cleanup_count=0 longest_length
+
+    [[ "$deployment_dir" == /* && "$deployment_dir" != "/" ]] || {
+        printf 'Error: deployment path must be absolute and cannot be /.\n' >&2
+        return 1
+    }
+
+    command -v sudo >/dev/null 2>&1 || {
+        printf 'Error: sudo is required to inspect or clean mounts under %s.\n' "$deployment_dir" >&2
+        return 1
+    }
+    command -v findmnt >/dev/null 2>&1 || {
+        printf 'Error: findmnt is required to inspect mounts under %s.\n' "$deployment_dir" >&2
+        return 1
+    }
+    command -v mountpoint >/dev/null 2>&1 || {
+        printf 'Error: mountpoint is required to inspect mounts under %s.\n' "$deployment_dir" >&2
+        return 1
+    }
+
+    while ((cleanup_count < 256)); do
+        targets="$(sudo findmnt --raw --noheadings --output TARGET)" || {
+            printf 'Error: cannot inspect active mounts.\n' >&2
+            return 1
+        }
+
+        longest_path=""
+        longest_length=0
+        while IFS= read -r encoded_target; do
+            [[ -n "$encoded_target" ]] || continue
+            # findmnt raw output hex-escapes unsafe characters such as spaces.
+            printf -v mount_path '%b' "$encoded_target"
+            case "$mount_path" in
+                "$deployment_dir"/*) ;;
+                *) continue ;;
+            esac
+            if ((${#mount_path} > longest_length)); then
+                longest_path="$mount_path"
+                longest_length=${#mount_path}
+            fi
+        done <<< "$targets"
+
+        [[ -n "$longest_path" ]] || return 0
+        if ! sudo mountpoint -q "$longest_path"; then
+            # The mount disappeared between inspection and selection.
+            cleanup_count=$((cleanup_count + 1))
+            continue
+        fi
+
+        source="$(sudo findmnt --noheadings --raw --output SOURCE --target "$longest_path")" || {
+            printf 'Error: cannot identify the mounted source at %s.\n' "$longest_path" >&2
+            return 1
+        }
+        printf 'Warning: cleaning up leftover L4T mount at %s (source %s).\n' \
+            "$longest_path" "${source:-unknown}" >&2
+        if ! sudo umount -- "$longest_path"; then
+            printf 'Warning: normal unmount failed; lazily detaching %s.\n' "$longest_path" >&2
+            sudo umount --lazy -- "$longest_path" || {
+                printf 'Error: failed to unmount %s, including lazy detach.\n' "$longest_path" >&2
+                return 1
+            }
+        fi
+        cleanup_count=$((cleanup_count + 1))
+
+        if [[ "$source" =~ ^/dev/loop[0-9]+$ ]] && sudo losetup "$source" >/dev/null 2>&1; then
+            sudo losetup --detach "$source" || {
+                printf 'Error: failed to detach loop device %s after unmounting %s.\n' \
+                    "$source" "$longest_path" >&2
+                return 1
+            }
+        fi
+    done
+
+    printf 'Error: mount cleanup exceeded 256 operations under %s.\n' "$deployment_dir" >&2
+    return 1
+}

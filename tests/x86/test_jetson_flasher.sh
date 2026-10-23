@@ -47,7 +47,11 @@ case "${1:-}" in
         exit
         ;;
     findmnt)
-        printf '/dev/loop42\n'
+        if [[ "$*" == *'--output TARGET'* ]]; then
+            [[ -e "$JETSON_TEST_MOUNT_MARKER" ]] && printf '%s\n' "$JETSON_TEST_BOOTLOADER/mnt"
+        else
+            printf '/dev/loop42\n'
+        fi
         exit 0
         ;;
     umount)
@@ -86,19 +90,19 @@ out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 6.2.3)"
 assert_contains "$out" 'demo'
 
 : > "$JETSON_TEST_LOG"
-out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes)"
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra")"
 assert_contains "$out" 'Rootfs partition size: 8GiB'
 assert_contains "$(cat "$JETSON_TEST_LOG")" 'IDS_ROOTFS_SIZE=8GiB ./flash.sh -S 8GiB demo mmcblk0p1'
 [[ -f "$fixture/Linux_for_Tegra/profile.dat" ]] || fail "selected payload was not installed"
 
-out="$(JETSON_TEST_CREATE_STALE_MOUNT=1 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes 2>&1)"
-assert_contains "$out" 'Warning: cleaning up leftover BSP mount'
+out="$(JETSON_TEST_CREATE_STALE_MOUNT=1 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra" 2>&1)"
+assert_contains "$out" 'Warning: cleaning up leftover L4T mount'
 [[ ! -e "$JETSON_TEST_MOUNT_MARKER" ]] || fail 'flash_jetson.sh left the BSP loop mount active'
 if out="$(JETSON_TEST_CREATE_STALE_MOUNT=1 JETSON_TEST_FLASH_EXIT=23 \
-    bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes 2>&1)"; then
+    bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra" 2>&1)"; then
     fail 'flash_jetson.sh unexpectedly succeeded after a flash command failure'
 fi
-assert_contains "$out" 'Warning: cleaning up leftover BSP mount'
+assert_contains "$out" 'Warning: cleaning up leftover L4T mount'
 [[ ! -e "$JETSON_TEST_MOUNT_MARKER" ]] || fail 'flash_jetson.sh left the BSP mount after flash.sh failed'
 
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --rootfs-size max)"
@@ -146,11 +150,11 @@ if bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-ver
 fi
 
 : > "$JETSON_TEST_LOG"
-bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode rootfs --rootdev mmcblk1p1 --jetpack-version 6.2.3 --yes
+bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode rootfs --rootdev mmcblk1p1 --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra"
 assert_contains "$(cat "$JETSON_TEST_LOG")" 'IDS_ROOTFS_SIZE=8GiB ./flash.sh -S 8GiB -k APP demo mmcblk1p1'
 
 : > "$JETSON_TEST_LOG"
-bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode dtb --jetpack-version 6.2.3 --yes
+bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode dtb --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra"
 log="$(cat "$JETSON_TEST_LOG")"
 assert_contains "$log" './flash.sh -k A_kernel-dtb demo mmcblk0p1'
 assert_contains "$log" './flash.sh -k B_kernel-dtb demo mmcblk0p1'
