@@ -27,7 +27,7 @@ Install the host dependencies:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  git pv tar bzip2 sudo util-linux \
+  git pv tar bzip2 sudo util-linux mount \
   abootimg xmlstarlet gdisk parted cpio gzip binutils \
   sshpass openssh-client
 ```

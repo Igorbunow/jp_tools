@@ -13,7 +13,7 @@ Install the packages used by the setup and Debian compatibility scripts:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  git pv tar bzip2 sudo util-linux patch \
+  git pv tar bzip2 sudo util-linux mount patch \
   abootimg xmlstarlet gdisk parted cpio gzip binutils \
   sshpass openssh-client
 ```
@@ -26,7 +26,8 @@ If `sudo` is not installed yet, run `apt-get` as root (for example, from `su -`)
 | `pv` | Shows extraction progress in `setup_jetson.sh`. |
 | `tar`, `bzip2` | Extracts NVIDIA `.tbz2` release archives. |
 | `sudo` | Runs L4T setup, privileged file operations, and flashing. |
-| `util-linux` | Provides `setpriv`, used to clear host supplementary groups before entering the rootfs chroot. |
+| `util-linux` | Provides `setpriv`, `flock`, `findmnt`, and `mountpoint`, used by setup and cleanup flows. |
+| `mount` | Provides `losetup` and `umount`; `losetup` may be installed under `/usr/sbin`, outside a regular user's `PATH`. `setup_jetson.sh` checks standard `sbin` locations as well. |
 | `patch` | Applies optional release-specific rootfs patches stored under `rootfs-fixes/`. |
 | `abootimg`, `xmlstarlet`, `gdisk`, `parted`, `cpio`, `gzip` | Host tools checked by `setup_debian.sh` for L4T recovery-image generation. The `sgdisk` command is provided by `gdisk`. |
 | `binutils` | Provides the `strings` command used by L4T tooling. |

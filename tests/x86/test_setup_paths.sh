@@ -8,6 +8,15 @@ assert_contains() { [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2
 SETUP="$REPO_DIR/setup_jetson.sh"
 DEFAULT_DIR=/opt/nvidia/jp/6.2.3
 
+host_command_function="$(sed -n '/^host_command_available() {/,/^}/p' "$SETUP")"
+[[ -n "$host_command_function" ]] || fail 'host command lookup helper is missing'
+eval "$host_command_function"
+if PATH=/usr/bin:/bin host_command_available losetup; then
+    :
+else
+    fail 'host command lookup did not find losetup outside PATH under sbin'
+fi
+
 out="$(env -u JETSON_ARCHIVE_DIR -u JETSON_DEPLOY_DIR bash "$SETUP" --print-paths 2>&1 || true)"
 assert_contains "$out" "Archive directory: $DEFAULT_DIR"
 assert_contains "$out" "Deployment base directory: $DEFAULT_DIR"

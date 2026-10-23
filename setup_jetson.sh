@@ -196,10 +196,21 @@ confirm() {
     esac
 }
 
+host_command_available() {
+    local command_name="$1"
+    local directory
+
+    command -v "$command_name" >/dev/null 2>&1 && return 0
+    for directory in /usr/local/sbin /usr/sbin /sbin; do
+        [[ -x "$directory/$command_name" ]] && return 0
+    done
+    return 1
+}
+
 check_dependencies() {
     local deps=("pv" "tar" "sudo" "df" "awk" "setpriv" "flock" "mountpoint" "findmnt" "losetup" "umount" "ps" "patch")
     for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
+        if ! host_command_available "$dep"; then
             echo -e "${RED}Error: required command '$dep' is not installed.${NC}"
             exit 1
         fi

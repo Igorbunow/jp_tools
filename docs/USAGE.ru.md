@@ -13,7 +13,7 @@
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  git pv tar bzip2 sudo util-linux patch \
+  git pv tar bzip2 sudo util-linux mount patch \
   abootimg xmlstarlet gdisk parted cpio gzip binutils \
   sshpass openssh-client
 ```
@@ -26,7 +26,8 @@ sudo apt-get install -y \
 | `pv` | Показывает прогресс распаковки в `setup_jetson.sh`. |
 | `tar`, `bzip2` | Распаковывают релизные архивы NVIDIA `.tbz2`. |
 | `sudo` | Запускает операции настройки L4T, привилегированные файловые команды и прошивку. |
-| `util-linux` | Предоставляет `setpriv`, который очищает дополнительные группы хоста перед входом в rootfs chroot. |
+| `util-linux` | Предоставляет `setpriv`, `flock`, `findmnt` и `mountpoint`, используемые скриптами подготовки и очистки. |
+| `mount` | Предоставляет `losetup` и `umount`; `losetup` может находиться в `/usr/sbin`, которого нет в `PATH` обычного пользователя. `setup_jetson.sh` также проверяет стандартные каталоги `sbin`. |
 | `patch` | Применяет необязательные релизные патчи rootfs из `rootfs-fixes/`. |
 | `abootimg`, `xmlstarlet`, `gdisk`, `parted`, `cpio`, `gzip` | Утилиты хоста, проверяемые `setup_debian.sh` для генерации recovery-образа L4T. Команда `sgdisk` входит в пакет `gdisk`. |
 | `binutils` | Предоставляет команду `strings`, используемую инструментами L4T. |
