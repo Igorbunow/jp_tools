@@ -45,6 +45,19 @@ grep -Fq 'update_step "Mounting QEMU rootfs resources"' "$setup_script" || {
 grep -Fq 'update_step "Unmounting QEMU rootfs resources"' "$setup_script" || {
     echo 'FAIL: QEMU unmounts must be a numbered step' >&2; exit 1;
 }
+grep -Fq 'rootfs_cleanup_transient_artifacts "$rootfs_path" "$ROOTFS_CLEANUP_ENABLED"' "$setup_script" || {
+    echo 'FAIL: QEMU session cleanup must apply the configured rootfs cleanup policy' >&2; exit 1;
+}
+[[ "$(grep -Fc 'cleanup_qemu_rootfs "$rootfs_path" true' "$setup_script")" -eq 2 ]] || {
+    echo 'FAIL: package-update and interactive QEMU teardown must report their cleanup step' >&2; exit 1;
+}
+cleanup_function="$(sed -n '/^cleanup_qemu_rootfs() {/,/^}/p' "$setup_script")"
+resolver_restore_line="$(printf '%s\n' "$cleanup_function" | grep -nF 'qemu_restore_rootfs_resolv' | cut -d: -f1)"
+rootfs_clean_line="$(printf '%s\n' "$cleanup_function" | grep -nF 'rootfs_cleanup_transient_artifacts' | cut -d: -f1)"
+if ! ((resolver_restore_line < rootfs_clean_line)); then
+    echo 'FAIL: rootfs cleanup must restore the original resolver before clearing /run' >&2
+    exit 1
+fi
 grep -Fq 'local cleanup_status' "$setup_script" || {
     echo 'FAIL: cleanup result must be checked after the APT operation' >&2; exit 1;
 }

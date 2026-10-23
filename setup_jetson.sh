@@ -10,6 +10,8 @@ DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 source "$PROJECT_DIR/lib/qemu_resolv.sh"
 # shellcheck source=lib/qemu_apt.sh
 source "$PROJECT_DIR/lib/qemu_apt.sh"
+# shellcheck source=lib/rootfs_cleanup.sh
+source "$PROJECT_DIR/lib/rootfs_cleanup.sh"
 # shellcheck source=lib/root_uart.sh
 source "$PROJECT_DIR/lib/root_uart.sh"
 # shellcheck source=lib/rootfs_release_fixes.sh
@@ -39,6 +41,7 @@ PRINT_PATHS=false
 APT_UPGRADE_BATCH=false
 FORCE_QEMU_CLEANUP=false
 FORCE_CUSTOM_REPOSITORIES=false
+ROOTFS_CLEANUP_ENABLED=true
 APT_PACKAGES_FILE="${JETSON_APT_PACKAGES_FILE:-$PROJECT_DIR/qemu-packages.txt}"
 
 case "${JETSON_SKIP_DEBIAN_PATCHES:-0}" in
@@ -55,6 +58,11 @@ case "${JETSON_FORCE_CUSTOM_REPOSITORIES:-0}" in
     1) FORCE_CUSTOM_REPOSITORIES=true ;;
     0) ;;
     *) qemu_apt_validate_force_repositories "${JETSON_FORCE_CUSTOM_REPOSITORIES}"; exit 2 ;;
+esac
+case "${JETSON_SKIP_ROOTFS_CLEANUP:-0}" in
+    1) ROOTFS_CLEANUP_ENABLED=false ;;
+    0) ;;
+    *) echo "JETSON_SKIP_ROOTFS_CLEANUP must be 0 or 1" >&2; exit 2 ;;
 esac
 
 # Release archives are selected as a matching pair, so R36.4.x (JetPack 6.2.2)
@@ -84,6 +92,7 @@ usage() {
     echo "  -y, --yes              Non-interactive batch mode"
     echo "  -f, --force            Remove an existing deployment"
     echo "  --skip-qemu            Skip the interactive QEMU shell"
+    echo "  --no-rootfs-cleanup    Keep rootfs caches, temporary files, logs, and histories"
     echo "  JETSON_QEMU_NAMESERVERS=... DNS servers for rootfs without nameservers (default: 8.8.8.8 1.1.1.1)"
     echo "  --force-qemu-cleanup   Terminate/recover a stale QEMU session in batch mode"
     echo "  --apt-upgrade          Run apt update/upgrade in batch mode"
@@ -105,6 +114,7 @@ usage() {
     echo "  JETSON_APT_UPGRADE=0|1                 Enable batch rootfs apt update/upgrade."
     echo "  JETSON_APT_PACKAGES_FILE               Package list for rootfs APT operations."
     echo "  JETSON_FORCE_CUSTOM_REPOSITORIES=0|1   Allow custom repository profiles after APT errors."
+    echo "  JETSON_SKIP_ROOTFS_CLEANUP=0|1         Keep rootfs transient files when set to 1."
     echo "  JETSON_QEMU_NAMESERVERS                Space-separated rootfs DNS fallback servers."
     exit 0
 }
@@ -122,6 +132,7 @@ while [[ $# -gt 0 ]]; do
         -y|--yes) SILENT_MODE=true; shift ;;
         -f|--force) FORCE_DELETE=true; shift ;;
         --skip-qemu) SKIP_QEMU=true; shift ;;
+        --no-rootfs-cleanup) ROOTFS_CLEANUP_ENABLED=false; shift ;;
         --force-qemu-cleanup) FORCE_QEMU_CLEANUP=true; shift ;;
         --apt-upgrade) APT_UPGRADE_BATCH=true; shift ;;
         --force-repositories) FORCE_CUSTOM_REPOSITORIES=true; shift ;;
@@ -172,6 +183,11 @@ if [[ "$PRINT_PATHS" == true ]]; then
         printf 'Rootfs apt update/upgrade (batch): enabled\n'
     else
         printf 'Rootfs apt update/upgrade (batch): disabled\n'
+    fi
+    if [[ "$ROOTFS_CLEANUP_ENABLED" == true ]]; then
+        printf 'Rootfs transient cleanup: enabled\n'
+    else
+        printf 'Rootfs transient cleanup: disabled\n'
     fi
     printf 'APT package list: %s\n' "$APT_PACKAGES_FILE"
     if [[ "$FORCE_CUSTOM_REPOSITORIES" == true ]]; then
@@ -432,13 +448,16 @@ prepare_qemu_rootfs() {
     # Recover an exact temporary APT pin left by a forcibly terminated run.
     qemu_apt_cleanup_upgrade_pin "$rootfs_path" || return 1
     qemu_apt_cleanup_service_policy "$rootfs_path" || return 1
+    if [[ "$ROOTFS_CLEANUP_ENABLED" == true ]]; then
+        rootfs_cleanup_remove_temporary_qemu "$rootfs_path" || return 1
+    fi
     
     if ! command -v qemu-aarch64-static &> /dev/null; then
         print_notice "Installing qemu-user-static on the host..."
         sudo apt-get update && sudo apt-get install -y qemu-user-static || return 1
     fi
     
-    sudo cp /usr/bin/qemu-aarch64-static "$rootfs_path/usr/bin/" || return 1
+    rootfs_cleanup_install_temporary_qemu "$rootfs_path" /usr/bin/qemu-aarch64-static || return 1
 
     # Replace the original resolver temporarily, including dangling symlinks,
     # and add fallback DNS only when the host resolver has no active server.
@@ -461,16 +480,44 @@ prepare_qemu_rootfs() {
 
 cleanup_qemu_rootfs() {
     local rootfs_path="$1"
+    local announce_cleanup_step="${2:-false}"
     local failed=false
+    local mounts_active=false
+    local resolver_restored=true
     local mount_path
 
     for mount_path in "$rootfs_path/dev/pts" "$rootfs_path/dev" "$rootfs_path/sys" "$rootfs_path/proc"; do
         if sudo mountpoint -q "$mount_path"; then
             print_notice "Warning: unmounting QEMU resource at $mount_path during cleanup."
-            sudo umount "$mount_path" || failed=true
+            if ! sudo umount "$mount_path"; then failed=true; mounts_active=true; fi
         fi
     done
-    qemu_restore_rootfs_resolv "$rootfs_path/etc/resolv.conf" || failed=true
+    if ! qemu_restore_rootfs_resolv "$rootfs_path/etc/resolv.conf"; then
+        failed=true
+        resolver_restored=false
+    fi
+    if [[ "$mounts_active" == false && "$resolver_restored" == true ]]; then
+        if [[ "$ROOTFS_CLEANUP_ENABLED" == true ]]; then
+            if [[ "$announce_cleanup_step" == true ]]; then
+                update_step "Cleaning rootfs transient files and caches"
+            else
+                print_notice "Cleaning rootfs transient files and caches during session recovery."
+            fi
+        else
+            if [[ "$announce_cleanup_step" == true ]]; then
+                update_step "Skipping rootfs transient cleanup"
+            else
+                print_notice "Skipping rootfs transient cleanup by request."
+            fi
+        fi
+        rootfs_cleanup_transient_artifacts "$rootfs_path" "$ROOTFS_CLEANUP_ENABLED" || failed=true
+    else
+        if [[ "$announce_cleanup_step" == true ]]; then
+            update_step "Skipping rootfs cleanup because QEMU resources or resolver are not restored"
+        else
+            print_notice "Skipping rootfs cleanup because QEMU resources or resolver are not restored."
+        fi
+    fi
     qemu_apt_cleanup_upgrade_pin "$rootfs_path" || failed=true
     qemu_apt_cleanup_service_policy "$rootfs_path" || failed=true
 
@@ -516,7 +563,7 @@ setup_qemu_chroot() {
     status=$?
 
     update_step "Unmounting QEMU rootfs resources"
-    cleanup_qemu_rootfs "$rootfs_path" || { end_qemu_session false; return 1; }
+    cleanup_qemu_rootfs "$rootfs_path" true || { end_qemu_session false; return 1; }
     end_qemu_session true || return 1
     if qemu_chroot_normalize_shell_status "$status"; then
         if ((status == 130)); then
@@ -553,7 +600,7 @@ update_rootfs_packages() {
         update_step "Updating rootfs system packages (skipped: repository validation failed)"
     fi
     update_step "Unmounting QEMU rootfs resources"
-    cleanup_qemu_rootfs "$rootfs_path"
+    cleanup_qemu_rootfs "$rootfs_path" true
     cleanup_status=$?
     if ((cleanup_status != 0)); then
         QEMU_APT_FAILED_STEP="QEMU rootfs cleanup"

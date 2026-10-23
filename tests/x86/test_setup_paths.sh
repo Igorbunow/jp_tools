@@ -23,6 +23,7 @@ assert_contains "$out" "Deployment base directory: $DEFAULT_DIR"
 assert_contains "$out" "L4T directory: $DEFAULT_DIR/Linux_for_Tegra"
 assert_contains "$out" 'Debian patches: enabled'
 assert_contains "$out" 'Rootfs apt update/upgrade (batch): disabled'
+assert_contains "$out" 'Rootfs transient cleanup: enabled'
 assert_contains "$out" "APT package list: $REPO_DIR/qemu-packages.txt"
 assert_contains "$out" 'Custom APT repositories (force): disabled'
 
@@ -46,6 +47,17 @@ assert_contains "$out" 'Custom APT repositories (force): disabled'
 
 out="$(bash "$SETUP" --force-qemu-cleanup --print-paths 2>&1)"
 assert_contains "$out" "Deployment base directory: $DEFAULT_DIR"
+
+out="$(bash "$SETUP" --no-rootfs-cleanup --print-paths 2>&1)"
+assert_contains "$out" 'Rootfs transient cleanup: disabled'
+
+out="$(JETSON_SKIP_ROOTFS_CLEANUP=1 bash "$SETUP" --print-paths 2>&1)"
+assert_contains "$out" 'Rootfs transient cleanup: disabled'
+
+if out="$(JETSON_SKIP_ROOTFS_CLEANUP=yes bash "$SETUP" --print-paths 2>&1)"; then
+    fail 'setup_jetson accepted an invalid JETSON_SKIP_ROOTFS_CLEANUP value'
+fi
+assert_contains "$out" 'JETSON_SKIP_ROOTFS_CLEANUP must be 0 or 1'
 
 out="$(JETSON_APT_UPGRADE=1 bash "$SETUP" --print-paths 2>&1)"
 assert_contains "$out" 'Rootfs apt update/upgrade (batch): enabled'
