@@ -89,6 +89,55 @@ fi
 
 has_tty() { [[ -r /dev/tty && -w /dev/tty ]]; }
 
+recovery_device_present() {
+    local vendor_file vendor product_file product
+    local sysfs_root="${JETSON_USB_SYSFS_ROOT:-/sys/bus/usb/devices}"
+    for vendor_file in "$sysfs_root"/*/idVendor; do
+        [[ -r "$vendor_file" ]] || continue
+        IFS= read -r vendor < "$vendor_file" || continue
+        [[ "${vendor,,}" == 0955 ]] || continue
+        product_file="${vendor_file%/idVendor}/idProduct"
+        [[ -r "$product_file" ]] || continue
+        IFS= read -r product < "$product_file" || continue
+        case "${product,,}" in
+            7023|7223|7323|7423|7523|7623) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+wait_for_recovery_device() {
+    local answer
+    if recovery_device_present; then
+        printf 'NVIDIA USB device detected in Recovery mode.\n'
+        return 0
+    fi
+
+    if [[ "$ASSUME_YES" == true ]] || ! has_tty; then
+        die 'Recovery device not detected (no supported NVIDIA Jetson Recovery USB ID).'
+    fi
+
+    while true; do
+        printf 'Recovery device not detected. Put the Jetson in USB Recovery and connect it, then choose [r]etry or [q]uit: ' > /dev/tty
+        IFS= read -r answer < /dev/tty || die 'could not read recovery prompt'
+        case "${answer,,}" in
+            r|retry)
+                if recovery_device_present; then
+                    printf 'NVIDIA USB device detected in Recovery mode.\n' > /dev/tty
+                    return 0
+                fi
+                printf 'Recovery device is still not detected.\n' > /dev/tty
+                ;;
+            q|quit|exit)
+                die 'flashing cancelled by user'
+                ;;
+            *)
+                printf 'Enter r to retry or q to quit.\n' > /dev/tty
+                ;;
+        esac
+    done
+}
+
 select_profile_interactively() {
     local index choice
     printf 'Compatible board profiles for JetPack %s:\n' "$JETPACK_VERSION" > /dev/tty
@@ -142,6 +191,8 @@ if [[ "$DRY_RUN" == true ]]; then
     for command in "${FLASH_COMMANDS[@]}"; do printf '  sudo %s\n' "$command"; done
     exit 0
 fi
+
+wait_for_recovery_device
 
 if [[ "$ASSUME_YES" != true ]]; then
     has_tty || die 'non-interactive flashing requires --yes'

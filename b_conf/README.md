@@ -41,6 +41,11 @@ profile and operation, installs that profile's payload into `Linux_for_Tegra`,
 then asks for confirmation before writing the device. `--list` prints profiles
 without modifying the BSP.
 
+Before installing a profile, the utility checks for a Jetson Orin Recovery USB
+ID. In interactive mode, if no device is found, choose retry after connecting
+the board in Recovery or quit. Batch runs fail immediately when Recovery is
+absent. `--dry-run` skips device detection.
+
 Batch examples:
 
 ```bash

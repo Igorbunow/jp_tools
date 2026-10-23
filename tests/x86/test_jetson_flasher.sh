@@ -8,7 +8,7 @@ assert_contains() { [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2
 
 fixture="$(mktemp -d /tmp/jetson-flasher.XXXXXX)"
 trap 'rm -rf -- "$fixture"' EXIT
-mkdir -p "$fixture/b_conf/common/demo/Linux_for_Tegra" "$fixture/Linux_for_Tegra" "$fixture/bin"
+mkdir -p "$fixture/b_conf/common/demo/Linux_for_Tegra" "$fixture/Linux_for_Tegra" "$fixture/bin" "$fixture/sysfs/1-1"
 cp "$REPO_DIR/b_conf/select_config.sh" "$fixture/b_conf/"
 cp "$REPO_DIR/b_conf/flash_jetson.sh" "$fixture/b_conf/"
 printf 'demo config\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/demo.conf"
@@ -31,6 +31,9 @@ EOF
 chmod +x "$fixture/bin/sudo"
 export PATH="$fixture/bin:$PATH"
 export JETSON_TEST_LOG="$fixture/sudo.log"
+export JETSON_USB_SYSFS_ROOT="$fixture/sysfs"
+printf '0955\n' > "$fixture/sysfs/1-1/idVendor"
+printf '7023\n' > "$fixture/sysfs/1-1/idProduct"
 
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 6.2.3)"
 assert_contains "$out" 'demo'
@@ -63,4 +66,28 @@ if bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-ver
     fail "non-interactive flash ran without --yes"
 fi
 
-printf 'PASS: profile listing, guarded full/rootfs/DTB writes, dry-run and batch validation\n'
+mkdir -p "$fixture/sysfs-empty"
+mkdir -p "$fixture/sysfs-empty/1-1"
+printf '0955\n' > "$fixture/sysfs-empty/1-1/idVendor"
+printf '7020\n' > "$fixture/sysfs-empty/1-1/idProduct"
+: > "$JETSON_TEST_LOG"
+if JETSON_USB_SYSFS_ROOT="$fixture/sysfs-empty" bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes > "$fixture/no-recovery.out" 2>&1; then
+    fail "batch flash unexpectedly continued without a recovery device"
+fi
+assert_contains "$(cat "$fixture/no-recovery.out")" 'Recovery device not detected'
+[[ ! -s "$JETSON_TEST_LOG" ]] || fail "batch flash touched BSP/device despite missing recovery device"
+
+: > "$JETSON_TEST_LOG"
+if ! printf 'r\nq\n' | script -qefc "env JETSON_USB_SYSFS_ROOT='$fixture/sysfs-empty' bash '$fixture/b_conf/flash_jetson.sh' --board demo --mode full --jetpack-version 6.2.3" /dev/null > "$fixture/interactive-recovery.out" 2>&1; then
+    # Choosing quit is a clean cancellation, but script(1) returns the command's
+    # non-zero cancellation status. Validate its UI and side effects below.
+    :
+fi
+interactive_out="$(cat "$fixture/interactive-recovery.out")"
+assert_contains "$interactive_out" 'Recovery device not detected'
+assert_contains "$interactive_out" '[r]etry'
+assert_contains "$interactive_out" '[q]uit'
+assert_contains "$interactive_out" 'still not detected'
+[[ ! -s "$JETSON_TEST_LOG" ]] || fail "interactive quit touched BSP/device despite missing recovery device"
+
+printf 'PASS: profile listing, recovery retry/quit and batch validation, guarded full/rootfs/DTB writes\n'

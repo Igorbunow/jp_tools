@@ -121,7 +121,7 @@ Review the selected profile's `COMPATIBILITY.md`. For a dry run, which lists the
   --dry-run
 ```
 
-Put the Jetson into USB Recovery mode, connect it to the host, then run the command without `--dry-run`. The script installs the selected profile files and requests confirmation before writing device partitions.
+Put the Jetson into USB Recovery mode and connect it to the host before running the command without `--dry-run`. The utility checks the USB device IDs first. For Orin it recognizes NVIDIA vendor ID `0955` with Recovery product IDs `7023`, `7223`, `7323`, `7423`, `7523`, or `7623`; a normal-mode `0955:7020` device is not treated as Recovery. NVIDIA documents these Recovery IDs in its [Jetson Linux R36.4.3 quick-start guide](https://docs.nvidia.com/jetson/archives/r36.4.3/DeveloperGuide/IN/QuickStart.html). If no Recovery device is found in an interactive session, choose retry after reconnecting/re-entering Recovery or quit. Batch mode exits immediately. After detection, the script installs the selected profile files and requests confirmation before writing device partitions.
 
 NVIDIA's release guide also documents running `sudo tools/l4t_flash_prerequisites.sh` from the extracted BSP before flashing. The helper's contents vary by release; this project provides the Debian-specific packages and fixes described above ([NVIDIA flashing guide](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/FlashingSupport.html)).
 

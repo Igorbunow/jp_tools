@@ -11,7 +11,7 @@ Utilities and board configuration profiles for preparing and flashing NVIDIA Jet
 - `setup_jetson.sh` — deploys a matching L4T and Sample Root Filesystem archive pair, applies NVIDIA binaries, creates the default user, installs the selected board profile, applies Debian host fixes, and configures optional UART root autologin.
 - `setup_debian.sh` — installs required host packages and patches L4T scripts for Debian compatibility.
 - `b_conf/` — board profiles, compatibility journals, profile selector, and flashing utilities.
-- `b_conf/flash_jetson.sh` — lists profiles for a JetPack version and flashes a complete image, both DTB slots, or only rootfs.
+- `b_conf/flash_jetson.sh` — lists profiles for a JetPack version, checks USB Recovery before installing a profile, and flashes a complete image, both DTB slots, or only rootfs. Interactively, it offers retry or quit if Recovery is absent.
 - `b_conf/suppress_uefi_auth_warnings.sh` — optional OP-TEE source patch/build/install helper for the two test UEFI key warnings.
 
 ## Requirements
