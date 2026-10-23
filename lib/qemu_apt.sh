@@ -9,6 +9,88 @@ QEMU_APT_REPOSITORY_OS_ID=""
 QEMU_APT_REPOSITORY_ATTEMPTS=""
 QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE=false
 QEMU_APT_UPGRADE_PIN_FILE=""
+QEMU_APT_SERVICE_POLICY_ROOTFS=""
+
+qemu_apt_service_policy_content() {
+    cat <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+}
+
+qemu_apt_service_policy_marker_content() {
+    printf '%s\n' 'jetson-qemu-apt-temporary-policy-v1'
+}
+
+qemu_apt_cleanup_service_policy() {
+    local rootfs_path="$1"
+    local policy_file="$rootfs_path/usr/sbin/policy-rc.d"
+    local marker_file="$rootfs_path/usr/sbin/.jetson-qemu-policy-rcd-active"
+    local expected_policy expected_marker cleanup_status=0
+
+    [[ -e "$marker_file" ]] || { QEMU_APT_SERVICE_POLICY_ROOTFS=""; return 0; }
+    expected_marker="$(mktemp)" || return 1
+    qemu_apt_service_policy_marker_content > "$expected_marker"
+    if ! cmp -s -- "$expected_marker" "$marker_file"; then
+        rm -f -- "$expected_marker"
+        printf 'Refusing to clean unexpected QEMU policy marker: %s\n' "$marker_file" >&2
+        return 1
+    fi
+    rm -f -- "$expected_marker"
+
+    if [[ -e "$policy_file" || -L "$policy_file" ]]; then
+        expected_policy="$(mktemp)" || return 1
+        qemu_apt_service_policy_content > "$expected_policy"
+        if ! cmp -s -- "$expected_policy" "$policy_file"; then
+            rm -f -- "$expected_policy"
+            printf 'Refusing to remove modified policy-rc.d: %s\n' "$policy_file" >&2
+            return 1
+        fi
+        rm -f -- "$expected_policy"
+        if [[ -w "$policy_file" ]]; then rm -f -- "$policy_file" || cleanup_status=$?
+        else sudo rm -f -- "$policy_file" || cleanup_status=$?; fi
+    fi
+    if ((cleanup_status == 0)); then
+        if [[ -w "$marker_file" ]]; then rm -f -- "$marker_file" || cleanup_status=$?
+        else sudo rm -f -- "$marker_file" || cleanup_status=$?; fi
+    fi
+    ((cleanup_status == 0)) || return "$cleanup_status"
+    QEMU_APT_SERVICE_POLICY_ROOTFS=""
+}
+
+qemu_apt_prepare_service_policy() {
+    local rootfs_path="$1"
+    local policy_file="$rootfs_path/usr/sbin/policy-rc.d"
+    local marker_file="$rootfs_path/usr/sbin/.jetson-qemu-policy-rcd-active"
+    local temporary_policy temporary_marker
+
+    qemu_apt_cleanup_service_policy "$rootfs_path" || return 1
+    # Preserve any policy intentionally provided by the target image.
+    if [[ -e "$policy_file" || -L "$policy_file" ]]; then return 0; fi
+    if [[ -w "$(dirname -- "$policy_file")" ]]; then
+        mkdir -p -- "$(dirname -- "$policy_file")" || return 1
+    else
+        sudo mkdir -p -- "$(dirname -- "$policy_file")" || return 1
+    fi
+    temporary_policy="$(mktemp)" || return 1
+    temporary_marker="$(mktemp)" || { rm -f -- "$temporary_policy"; return 1; }
+    qemu_apt_service_policy_content > "$temporary_policy"
+    qemu_apt_service_policy_marker_content > "$temporary_marker"
+    if [[ -w "$(dirname -- "$policy_file")" ]]; then
+        install -m 0755 -- "$temporary_marker" "$marker_file" &&
+            install -m 0755 -- "$temporary_policy" "$policy_file"
+    else
+        sudo install -m 0755 -- "$temporary_marker" "$marker_file" &&
+            sudo install -m 0755 -- "$temporary_policy" "$policy_file"
+    fi
+    local status=$?
+    rm -f -- "$temporary_policy" "$temporary_marker"
+    if ((status != 0)); then
+        qemu_apt_cleanup_service_policy "$rootfs_path" || true
+        return "$status"
+    fi
+    QEMU_APT_SERVICE_POLICY_ROOTFS="$rootfs_path"
+}
 
 qemu_apt_upgrade_pin_content() {
     cat <<'EOF'
@@ -656,9 +738,18 @@ qemu_apt_upgrade_install() {
     local failed_step=""
     local cleanup_status=0
 
+    qemu_apt_prepare_service_policy "$rootfs_path"
+    status=$?
+    if ((status != 0)); then
+        QEMU_APT_FAILED_STEP="preparing chroot service policy"
+        QEMU_APT_EXIT_STATUS="$status"
+        return "$status"
+    fi
+
     qemu_apt_prepare_upgrade_pin "$rootfs_path"
     status=$?
     if ((status != 0)); then
+        qemu_apt_cleanup_service_policy "$rootfs_path" || true
         QEMU_APT_FAILED_STEP="protecting NVIDIA BSP packages during QEMU APT"
         QEMU_APT_EXIT_STATUS="$status"
         return "$status"
@@ -684,6 +775,12 @@ qemu_apt_upgrade_install() {
     qemu_apt_cleanup_upgrade_pin "$rootfs_path" || cleanup_status=$?
     if ((cleanup_status != 0)); then
         QEMU_APT_FAILED_STEP="restoring temporary NVIDIA BSP APT pin"
+        QEMU_APT_EXIT_STATUS="$cleanup_status"
+        return "$cleanup_status"
+    fi
+    qemu_apt_cleanup_service_policy "$rootfs_path" || cleanup_status=$?
+    if ((cleanup_status != 0)); then
+        QEMU_APT_FAILED_STEP="restoring target chroot service policy"
         QEMU_APT_EXIT_STATUS="$cleanup_status"
         return "$cleanup_status"
     fi

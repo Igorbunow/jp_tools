@@ -47,6 +47,27 @@ export JETSON_TEST_LOG="$fixture/sudo.log"
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/qemu_apt.sh"
 
+# Service actions must be denied only during QEMU APT operations, without
+# replacing a policy supplied by the target image.
+policy_rootfs="$fixture/policy-rootfs"
+mkdir -p "$policy_rootfs/usr/sbin"
+qemu_apt_prepare_service_policy "$policy_rootfs"
+policy_file="$policy_rootfs/usr/sbin/policy-rc.d"
+[[ -x "$policy_file" ]] || { echo 'FAIL: temporary policy-rc.d was not installed executable' >&2; exit 1; }
+[[ "$(cat "$policy_file")" == $'#!/bin/sh\nexit 101' ]] || {
+    echo 'FAIL: temporary policy-rc.d does not deny service actions' >&2; exit 1;
+}
+qemu_apt_cleanup_service_policy "$policy_rootfs"
+[[ ! -e "$policy_file" ]] || { echo 'FAIL: temporary policy-rc.d remained after cleanup' >&2; exit 1; }
+
+printf '#!/bin/sh\nexit 0\n' > "$policy_file"
+chmod +x "$policy_file"
+qemu_apt_prepare_service_policy "$policy_rootfs"
+qemu_apt_cleanup_service_policy "$policy_rootfs"
+[[ "$(cat "$policy_file")" == $'#!/bin/sh\nexit 0' ]] || {
+    echo 'FAIL: existing policy-rc.d was modified' >&2; exit 1;
+}
+
 qemu_apt_validate_force_repositories 0
 qemu_apt_validate_force_repositories 1
 if qemu_apt_validate_force_repositories true >/dev/null 2>&1; then
@@ -470,6 +491,10 @@ for failure_case in \
     fi
     [[ ! -e "$fixture/rootfs/etc/apt/preferences.d/90-jetson-qemu-no-l4t-upgrade" ]] || {
         echo "FAIL: temporary NVIDIA BSP package pin remained after $expected_step failure" >&2; exit 1;
+    }
+    [[ ! -e "$fixture/rootfs/usr/sbin/.jetson-qemu-policy-rcd-active" &&
+        ! -e "$fixture/rootfs/usr/sbin/policy-rc.d" ]] || {
+        echo "FAIL: temporary service policy remained after $expected_step failure" >&2; exit 1;
     }
 done
 
