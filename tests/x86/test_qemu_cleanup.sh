@@ -48,6 +48,15 @@ grep -Fq 'update_step "Unmounting QEMU rootfs resources"' "$setup_script" || {
 grep -Fq 'local cleanup_status' "$setup_script" || {
     echo 'FAIL: cleanup result must be checked after the APT operation' >&2; exit 1;
 }
+grep -Fq 'trap setup_jetson_exit_cleanup EXIT' "$setup_script" || {
+    echo 'FAIL: setup_jetson.sh must clean managed mounts on every exit' >&2; exit 1;
+}
+grep -Fq 'Warning: unmounting QEMU resource at $mount_path during cleanup.' "$setup_script" || {
+    echo 'FAIL: QEMU unmounts must be explicitly reported' >&2; exit 1;
+}
+grep -Fq 'l4t_cleanup_bootloader_mount "$TARGET_DIR/bootloader"' "$setup_script" || {
+    echo 'FAIL: setup_jetson.sh must clean a stale BSP loop mount on exit' >&2; exit 1;
+}
 
 printf 'PASS: QEMU APT cleanup runs on normal return and termination signals\n'
 

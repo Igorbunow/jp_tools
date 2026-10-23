@@ -83,6 +83,12 @@ an explicit size is rejected when it exceeds a known limit or the maximum is
 unknown. The chosen size is passed to `flash.sh` with `-S` and
 `IDS_ROOTFS_SIZE`. DTB-only flashes do not change rootfs size.
 
+After every flash command and again on script exit, the utility checks
+NVIDIA's `Linux_for_Tegra/bootloader/mnt` work mount. If a failed or
+interrupted vendor command left it mounted, the utility warns, unmounts it,
+and detaches its loop device. `setup_jetson.sh` applies the same exit cleanup
+and reports each QEMU mount it removes.
+
 ## Optional OP-TEE test-key warning suppression
 
 `suppress_uefi_auth_warnings.sh` provides an opt-in source patch for the two

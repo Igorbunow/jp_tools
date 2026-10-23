@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 B_CONF_DIR="$SCRIPT_DIR"
+# shellcheck source=lib/l4t_mount_cleanup.sh
+source "$REPO_DIR/lib/l4t_mount_cleanup.sh"
 L4T_DIR="${JETSON_L4T_DIR:-}"
 DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 ARCHIVE_DIR="${JETSON_ARCHIVE_DIR:-}"
@@ -412,6 +414,16 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
+flash_jetson_exit_cleanup() {
+    local exit_status=$?
+    trap - EXIT
+    if [[ -d "$L4T_DIR/bootloader" ]]; then
+        l4t_cleanup_bootloader_mount "$L4T_DIR/bootloader" || exit_status=1
+    fi
+    exit "$exit_status"
+}
+trap flash_jetson_exit_cleanup EXIT
+
 wait_for_recovery_device
 
 if [[ "$ASSUME_YES" != true ]]; then
@@ -431,7 +443,12 @@ for command in "${FLASH_COMMANDS[@]}"; do
     printf 'Running: sudo'
     printf ' %q' "${flash_args[@]}"
     printf '\n'
-    (cd -- "$L4T_DIR" && sudo "${flash_args[@]}") || die "flash command failed: $command"
+    flash_status=0
+    cleanup_status=0
+    (cd -- "$L4T_DIR" && sudo "${flash_args[@]}") || flash_status=$?
+    l4t_cleanup_bootloader_mount "$L4T_DIR/bootloader" || cleanup_status=$?
+    ((cleanup_status == 0)) || die "failed to clean BSP mounts after: $command"
+    ((flash_status == 0)) || die "flash command failed: $command"
 done
 
 printf 'Flash operation completed for %s (%s).\n' "$BOARD" "$MODE"

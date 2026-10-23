@@ -18,6 +18,8 @@ source "$PROJECT_DIR/lib/rootfs_release_fixes.sh"
 source "$PROJECT_DIR/lib/qemu_chroot.sh"
 # shellcheck source=lib/qemu_session.sh
 source "$PROJECT_DIR/lib/qemu_session.sh"
+# shellcheck source=lib/l4t_mount_cleanup.sh
+source "$PROJECT_DIR/lib/l4t_mount_cleanup.sh"
 # shellcheck source=lib/progress.sh
 source "$PROJECT_DIR/lib/progress.sh"
 
@@ -150,6 +152,7 @@ APT_PACKAGES_FILE="$(realpath -m -- "$APT_PACKAGES_FILE")"
 TARGET_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
 QEMU_SESSION_LOCK_FILE="$DEPLOY_BASE_DIR/.jetson-qemu-session.lock"
 QEMU_SESSION_HELD=false
+QEMU_ROOTFS_ACTIVE=""
 LOCAL_ROOTFS_OVERLAY="$PROJECT_DIR/$LOCAL_ROOTFS_OVERLAY_NAME"
 JETPACK_VERSION="${JETPACK_VERSION:-$(basename -- "$ARCHIVE_DIR")}"
 JETPACK_VERSION="${JETPACK_VERSION% }"
@@ -194,7 +197,7 @@ confirm() {
 }
 
 check_dependencies() {
-    local deps=("pv" "tar" "sudo" "df" "awk" "setpriv" "flock" "mountpoint" "umount" "ps" "patch")
+    local deps=("pv" "tar" "sudo" "df" "awk" "setpriv" "flock" "mountpoint" "findmnt" "losetup" "umount" "ps" "patch")
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
             echo -e "${RED}Error: required command '$dep' is not installed.${NC}"
@@ -451,6 +454,7 @@ cleanup_qemu_rootfs() {
 
     for mount_path in "$rootfs_path/dev/pts" "$rootfs_path/dev" "$rootfs_path/sys" "$rootfs_path/proc"; do
         if sudo mountpoint -q "$mount_path"; then
+            print_notice "Warning: unmounting QEMU resource at $mount_path during cleanup."
             sudo umount "$mount_path" || failed=true
         fi
     done
@@ -547,6 +551,32 @@ update_rootfs_packages() {
     end_qemu_session true || { QEMU_APT_FAILED_STEP="QEMU session release"; return 1; }
     return "$status"
 }
+
+setup_jetson_exit_cleanup() {
+    local exit_status=$?
+    trap - EXIT
+
+    if [[ -n "${QEMU_ROOTFS_ACTIVE:-}" ]]; then
+        print_notice "Warning: setup_jetson.sh is exiting with active QEMU rootfs mounts; cleaning them up."
+        if [[ -n "${QEMU_APT_REPOSITORY_BACKUP_DIR:-}" ]]; then
+            qemu_apt_restore_repository_sources "$QEMU_APT_REPOSITORY_BACKUP_ROOTFS" || exit_status=1
+        fi
+        cleanup_qemu_rootfs "$QEMU_ROOTFS_ACTIVE" || exit_status=1
+    fi
+    if [[ "${QEMU_SESSION_HELD:-false}" == true ]]; then
+        if [[ -n "${QEMU_ROOTFS_ACTIVE:-}" ]]; then
+            end_qemu_session false || exit_status=1
+        else
+            end_qemu_session true || exit_status=1
+        fi
+    fi
+    if [[ -n "${TARGET_DIR:-}" && -d "$TARGET_DIR/bootloader" ]]; then
+        l4t_cleanup_bootloader_mount "$TARGET_DIR/bootloader" || exit_status=1
+    fi
+    exit "$exit_status"
+}
+
+trap setup_jetson_exit_cleanup EXIT
 
 # --- Execution starts here ---
 

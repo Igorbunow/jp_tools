@@ -8,7 +8,8 @@ assert_contains() { [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2
 
 fixture="$(mktemp -d /tmp/jetson-flasher.XXXXXX)"
 trap 'rm -rf -- "$fixture"' EXIT
-mkdir -p "$fixture/b_conf/common/demo/Linux_for_Tegra" "$fixture/Linux_for_Tegra" "$fixture/bin" "$fixture/sysfs/1-1"
+mkdir -p "$fixture/b_conf/common/demo/Linux_for_Tegra" "$fixture/Linux_for_Tegra/bootloader" \
+    "$fixture/bin" "$fixture/sysfs/1-1" "$fixture/lib"
 printf 'ROOTFSSIZE=55GiB\n' > "$fixture/Linux_for_Tegra/p3701.conf.common"
 mkdir -p "$fixture/b_conf/common/multi-module/Linux_for_Tegra"
 cat > "$fixture/b_conf/common/multi-module/Linux_for_Tegra/multi-module.conf" <<'EOF'
@@ -17,6 +18,7 @@ ROOTFSSIZE=8GiB
 EOF
 cp "$REPO_DIR/b_conf/select_config.sh" "$fixture/b_conf/"
 cp "$REPO_DIR/b_conf/flash_jetson.sh" "$fixture/b_conf/"
+cp "$REPO_DIR/lib/l4t_mount_cleanup.sh" "$fixture/lib/"
 printf 'demo config\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/demo.conf"
 printf 'payload\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/profile.dat"
 cat > "$fixture/b_conf/common/demo/ROOTFS_SIZE" <<'EOF'
@@ -24,7 +26,11 @@ DEFAULT=8GiB
 EOF
 cat > "$fixture/Linux_for_Tegra/flash.sh" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+if [[ "${JETSON_TEST_CREATE_STALE_MOUNT:-0}" == 1 ]]; then
+    mkdir -p "$JETSON_TEST_BOOTLOADER/mnt"
+    touch "$JETSON_TEST_MOUNT_MARKER"
+fi
+exit "${JETSON_TEST_FLASH_EXIT:-0}"
 EOF
 chmod +x "$fixture/Linux_for_Tegra/flash.sh"
 cat > "$fixture/bin/sudo" <<'EOF'
@@ -35,11 +41,37 @@ if [[ "${1:-}" == install ]]; then
     shift
     exec /usr/bin/install "$@"
 fi
+case "${1:-}" in
+    mountpoint)
+        [[ -e "$JETSON_TEST_MOUNT_MARKER" ]]
+        exit
+        ;;
+    findmnt)
+        printf '/dev/loop42\n'
+        exit 0
+        ;;
+    umount)
+        [[ "${2:-}" == -- && "${3:-}" == "$JETSON_TEST_BOOTLOADER/mnt" ]] || exit 9
+        rm -f "$JETSON_TEST_MOUNT_MARKER"
+        exit 0
+        ;;
+    losetup)
+        if [[ "${2:-}" == /dev/loop42 ]]; then exit 0; fi
+        [[ "${2:-}" == --detach && "${3:-}" == /dev/loop42 ]] || exit 9
+        exit 0
+        ;;
+    env)
+        shift
+        exec /usr/bin/env "$@"
+        ;;
+esac
 exit 0
 EOF
 chmod +x "$fixture/bin/sudo"
 export PATH="$fixture/bin:$PATH"
 export JETSON_TEST_LOG="$fixture/sudo.log"
+export JETSON_TEST_BOOTLOADER="$fixture/Linux_for_Tegra/bootloader"
+export JETSON_TEST_MOUNT_MARKER="$fixture/bsp-mount-active"
 export JETSON_USB_SYSFS_ROOT="$fixture/sysfs"
 printf '0955\n' > "$fixture/sysfs/1-1/idVendor"
 printf '7023\n' > "$fixture/sysfs/1-1/idProduct"
@@ -58,6 +90,16 @@ out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack
 assert_contains "$out" 'Rootfs partition size: 8GiB'
 assert_contains "$(cat "$JETSON_TEST_LOG")" 'IDS_ROOTFS_SIZE=8GiB ./flash.sh -S 8GiB demo mmcblk0p1'
 [[ -f "$fixture/Linux_for_Tegra/profile.dat" ]] || fail "selected payload was not installed"
+
+out="$(JETSON_TEST_CREATE_STALE_MOUNT=1 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes 2>&1)"
+assert_contains "$out" 'Warning: cleaning up leftover BSP mount'
+[[ ! -e "$JETSON_TEST_MOUNT_MARKER" ]] || fail 'flash_jetson.sh left the BSP loop mount active'
+if out="$(JETSON_TEST_CREATE_STALE_MOUNT=1 JETSON_TEST_FLASH_EXIT=23 \
+    bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes 2>&1)"; then
+    fail 'flash_jetson.sh unexpectedly succeeded after a flash command failure'
+fi
+assert_contains "$out" 'Warning: cleaning up leftover BSP mount'
+[[ ! -e "$JETSON_TEST_MOUNT_MARKER" ]] || fail 'flash_jetson.sh left the BSP mount after flash.sh failed'
 
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --rootfs-size max)"
 assert_contains "$out" 'Rootfs partition size: 55GiB'
@@ -189,7 +231,9 @@ if JETSON_USB_SYSFS_ROOT="$fixture/sysfs-empty" bash "$fixture/b_conf/flash_jets
     fail "batch flash unexpectedly continued without a recovery device"
 fi
 assert_contains "$(cat "$fixture/no-recovery.out")" 'Recovery device not detected'
-[[ ! -s "$JETSON_TEST_LOG" ]] || fail "batch flash touched BSP/device despite missing recovery device"
+if [[ "$(cat "$JETSON_TEST_LOG")" == *'./flash.sh'* || "$(cat "$JETSON_TEST_LOG")" == *'install -D'* ]]; then
+    fail 'batch flash modified the BSP/device despite missing Recovery mode'
+fi
 
 : > "$JETSON_TEST_LOG"
 if ! printf 'r\nq\n' | script -qefc "env JETSON_USB_SYSFS_ROOT='$fixture/sysfs-empty' bash '$fixture/b_conf/flash_jetson.sh' --board demo --mode full --jetpack-version 6.2.3" /dev/null > "$fixture/interactive-recovery.out" 2>&1; then
@@ -202,6 +246,8 @@ assert_contains "$interactive_out" 'Recovery device not detected'
 assert_contains "$interactive_out" '[r]etry'
 assert_contains "$interactive_out" '[q]uit'
 assert_contains "$interactive_out" 'still not detected'
-[[ ! -s "$JETSON_TEST_LOG" ]] || fail "interactive quit touched BSP/device despite missing recovery device"
+if [[ "$(cat "$JETSON_TEST_LOG")" == *'./flash.sh'* || "$(cat "$JETSON_TEST_LOG")" == *'install -D'* ]]; then
+    fail 'interactive quit modified the BSP/device despite missing Recovery mode'
+fi
 
 printf 'PASS: profile listing, recovery retry/quit and batch validation, guarded full/rootfs/DTB writes\n'
