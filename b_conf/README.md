@@ -1,5 +1,7 @@
 # Jetson board configuration bundles
 
+[English usage guide](../docs/USAGE.en.md) · [Руководство на русском](../docs/USAGE.ru.md)
+
 Each profile is stored as a package containing:
 
 - `Linux_for_Tegra/`: files copied into the selected BSP.
