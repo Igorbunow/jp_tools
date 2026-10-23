@@ -35,6 +35,10 @@ export JETSON_USB_SYSFS_ROOT="$fixture/sysfs"
 printf '0955\n' > "$fixture/sysfs/1-1/idVendor"
 printf '7023\n' > "$fixture/sysfs/1-1/idProduct"
 
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --help)"
+assert_contains "$out" 'JETSON_ARCHIVE_DIR'
+assert_contains "$out" 'JETSON_DEPLOY_DIR'
+
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 6.2.3)"
 assert_contains "$out" 'demo'
 
@@ -83,6 +87,37 @@ cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/versioned-deploy/6.2.3/Linux_fo
 out="$(JETSON_DEPLOY_DIR="$fixture/versioned-deploy/6.2.3" bash "$fixture/b_conf/flash_jetson.sh" --list)"
 assert_contains "$out" 'Profiles compatible with JetPack 6.2.3:'
 assert_contains "$out" 'versioned'
+
+# An arbitrary deployment path must use the JetPack metadata written into the
+# deployed rootfs, so minor-family profiles are listed without an override.
+mkdir -p "$fixture/b_conf/6.2.x/family-versioned/Linux_for_Tegra" \
+    "$fixture/deployed-arbitrary/Linux_for_Tegra/rootfs/etc" \
+    "$fixture/deployed-arbitrary/Linux_for_Tegra/nv_tegra" \
+    "$fixture/archive/6.2.3"
+printf 'family config\n' > "$fixture/b_conf/6.2.x/family-versioned/Linux_for_Tegra/family-versioned.conf"
+cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/deployed-arbitrary/Linux_for_Tegra/flash.sh"
+cat > "$fixture/deployed-arbitrary/Linux_for_Tegra/rootfs/etc/jetson-image-info" <<'EOF'
+JetPack: 6.2.3
+L4T: R36.5.2
+Distribution: Ubuntu 22.04 (jammy; version 22.04)
+Board profile: demo
+EOF
+printf '# R36 (release), REVISION: 5.2, BOARD: generic\n' > "$fixture/deployed-arbitrary/Linux_for_Tegra/nv_tegra/nv_tegra_release"
+out="$(JETSON_DEPLOY_DIR="$fixture/deployed-arbitrary" bash "$fixture/b_conf/flash_jetson.sh" --list)"
+assert_contains "$out" 'Detected JetPack version: 6.2.3'
+assert_contains "$out" 'family-versioned'
+
+# Older deployments without image metadata can match the detected L4T release
+# to a versioned archive pair.
+mv "$fixture/deployed-arbitrary/Linux_for_Tegra/rootfs/etc/jetson-image-info" \
+    "$fixture/deployed-arbitrary/Linux_for_Tegra/rootfs/etc/jetson-image-info.saved"
+touch "$fixture/archive/6.2.3/Jetson_Linux_R36.5.2_aarch64.tbz2" \
+    "$fixture/archive/6.2.3/Tegra_Linux_Sample-Root-Filesystem_R36.5.2_aarch64.tbz2"
+out="$(JETSON_DEPLOY_DIR="$fixture/deployed-arbitrary" JETSON_ARCHIVE_DIR="$fixture/archive/6.2.3" \
+    bash "$fixture/b_conf/flash_jetson.sh" --list)"
+assert_contains "$out" 'Detected JetPack version: 6.2.3'
+assert_contains "$out" 'matched deployed L4T R36.5.2 to archive pair'
+assert_contains "$out" 'family-versioned'
 
 if bash "$fixture/b_conf/flash_jetson.sh" --board missing --mode full --jetpack-version 6.2.3 --yes >/dev/null 2>&1; then
     fail "unknown profile unexpectedly accepted"

@@ -59,9 +59,12 @@ Batch examples:
 `rootfs` writes only `APP`. The default root device is `mmcblk0p1`. Set
 `JETSON_DEPLOY_DIR` to the base deployment directory (the utility uses its
 `Linux_for_Tegra/` child), or `JETSON_L4T_DIR` to the exact BSP directory.
-`JETPACK_VERSION` or `--jetpack-version VERSION` selects version-specific
-bundles. If no version can be inferred from the deployment path, the utility
-lists and selects `common/` profiles only. `JETSON_USB_SYSFS_ROOT` can override
+The utility detects JetPack from the deployed rootfs `/etc/jetson-image-info`;
+for older images it can match the BSP's L4T release to the archive pair in
+`JETSON_ARCHIVE_DIR`, then check version-named paths. It prints the detected
+version and its source. `JETPACK_VERSION` or `--jetpack-version VERSION`
+overrides detection. If no version can be inferred, only `common/` profiles
+are listed. `JETSON_USB_SYSFS_ROOT` can override
 the USB sysfs path used for Recovery detection (default
 `/sys/bus/usb/devices`). `--dry-run` prints selected files and commands without
 installing or flashing. `--yes` bypasses the interactive USB Recovery and

@@ -123,9 +123,10 @@ The scripts also show these settings in their `--help` output:
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
-| `JETSON_ARCHIVE_DIR`, `JETSON_DEPLOY_DIR` | `setup_jetson.sh` | Archive source and deployment base paths. If only one is set, it supplies both. |
+| `JETSON_ARCHIVE_DIR`, `JETSON_DEPLOY_DIR` | `setup_jetson.sh`; `JETSON_ARCHIVE_DIR` also helps `b_conf/flash_jetson.sh` match older deployed L4T releases to an archive pair | Archive source and deployment base paths. If only one is set for setup, it supplies both. |
 | `JETSON_L4T_DIR` | `setup_debian.sh`, `b_conf/flash_jetson.sh` | Exact `Linux_for_Tegra` directory; command-line `--l4t-dir` takes precedence. |
-| `JETPACK_VERSION`, `L4T_VERSION` | `setup_jetson.sh` | Select the board profile compatibility version and matching L4T archive pair, respectively. |
+| `JETPACK_VERSION` | `setup_jetson.sh`, `b_conf/flash_jetson.sh` | Select/override the JetPack compatibility version. The flasher otherwise reads `/etc/jetson-image-info`, then tries BSP/archive path evidence. |
+| `L4T_VERSION` | `setup_jetson.sh` | Select the matching L4T archive pair. |
 | `JETSON_BOARD`, `JETSON_USER`, `JETSON_PASS`, `JETSON_HOST` | `setup_jetson.sh` | Default board profile and created user's name, password, and hostname. |
 | `JETSON_SKIP_DEBIAN_PATCHES` | `setup_jetson.sh` | `1` skips host compatibility patches; default `0` applies them. |
 | `JETSON_APT_UPGRADE`, `JETSON_APT_PACKAGES_FILE` | `setup_jetson.sh` | Enable batch rootfs APT update/upgrade and select its package list. |
@@ -134,7 +135,7 @@ The scripts also show these settings in their `--help` output:
 | `JETSON_USB_SYSFS_ROOT` | `b_conf/flash_jetson.sh` | USB sysfs directory used to detect a board in Recovery; defaults to `/sys/bus/usb/devices`. |
 | `CROSS_COMPILE_AARCH64_PATH`, `TMPDIR` | `b_conf/suppress_uefi_auth_warnings.sh` | Required NVIDIA AArch64 Buildroot toolchain directory and temporary workspace parent (defaults to `/tmp`). |
 
-`cleanup.sh` and `b_conf/select_config.sh` do not use environment variables. If `flash_jetson.sh` cannot infer a JetPack version from a version-named deployment path, it lists and selects `common/` profiles only; set `JETPACK_VERSION` or pass `--jetpack-version` to include version-specific profiles.
+`cleanup.sh` and `b_conf/select_config.sh` do not use environment variables. `b_conf/flash_jetson.sh` detects JetPack from the deployed rootfs `/etc/jetson-image-info`; for older images it can match the BSP's L4T release to the pair in `JETSON_ARCHIVE_DIR`, then falls back to version-named paths. It prints the detected version and its source. If none is available, only `common/` profiles are listed; set `JETPACK_VERSION` or pass `--jetpack-version` to override detection.
 
 If `Linux_for_Tegra` already exists, interactive mode offers reuse or removal. `--force` removes it and rebuilds from the archives; this deletes all content under that deployment path. Back up any files you need first. In batch mode (`-y`), an existing deployment is reused unless `--force` is set.
 
@@ -197,7 +198,7 @@ Available modes:
 | `dtb` | Writes `A_kernel-dtb` and then `B_kernel-dtb`. |
 | `rootfs` | Writes only the `APP` partition. |
 
-The default root device is `mmcblk0p1`. Specify another device with `--rootdev DEVICE` if the target configuration requires it. `JETSON_DEPLOY_DIR` selects `PATH/Linux_for_Tegra`; `JETSON_L4T_DIR` selects the exact BSP path and takes precedence. When version inference is unavailable, only common profiles can be selected unless `JETPACK_VERSION` or `--jetpack-version` is provided. Examples:
+The default root device is `mmcblk0p1`. Specify another device with `--rootdev DEVICE` if the target configuration requires it. `JETSON_DEPLOY_DIR` selects `PATH/Linux_for_Tegra`; `JETSON_L4T_DIR` selects the exact BSP path and takes precedence. The flasher reads JetPack from the deployed image metadata, so the deployment directory may have any name. Examples:
 
 ```bash
 ./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode full --jetpack-version 6.2.3

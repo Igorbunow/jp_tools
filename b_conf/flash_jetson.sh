@@ -7,6 +7,7 @@ REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 B_CONF_DIR="$SCRIPT_DIR"
 L4T_DIR="${JETSON_L4T_DIR:-}"
 DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
+ARCHIVE_DIR="${JETSON_ARCHIVE_DIR:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-}"
 BOARD=""
 MODE=""
@@ -23,7 +24,7 @@ Options:
   --list                       List profiles compatible with the selected version (or common profiles if unknown).
   --board PROFILE              Board profile (also accepted: --profile).
   --mode MODE                  full, dtb (write A then B), or rootfs (APP only).
-  --jetpack-version VERSION    Select versioned profiles; defaults to a version-looking path component.
+  --jetpack-version VERSION    Override JetPack detection and select matching versioned profiles.
   --l4t-dir PATH               Use this exact Linux_for_Tegra directory.
   --deploy-dir PATH            Use PATH/Linux_for_Tegra as the deployment.
   --rootdev DEVICE             flash.sh root device (default: mmcblk0p1).
@@ -33,6 +34,7 @@ Options:
 
 Environment variables:
   JETSON_DEPLOY_DIR            Base deployment directory; uses PATH/Linux_for_Tegra.
+  JETSON_ARCHIVE_DIR           Archive directory; used to match the deployed L4T release when image metadata is absent.
   JETSON_L4T_DIR               Exact Linux_for_Tegra directory (takes precedence).
   JETPACK_VERSION              JetPack version used to resolve versioned profiles.
   JETSON_USB_SYSFS_ROOT        USB sysfs root used for Recovery detection (default: /sys/bus/usb/devices).
@@ -71,22 +73,58 @@ L4T_DIR="${L4T_DIR:-$REPO_DIR/Linux_for_Tegra}"
 [[ "$L4T_DIR" = /* ]] || L4T_DIR="$PWD/$L4T_DIR"
 L4T_DIR="$(realpath -m -- "$L4T_DIR")"
 
-# Infer the version only from directory components that actually look like a
-# JetPack version. A deployment may have any name (for example /tmp/999nv),
-# and the repository directory name is not a reliable version source.
-if [[ -z "$JETPACK_VERSION" ]]; then
-    for version_candidate in "$(basename -- "$(dirname -- "$L4T_DIR")")" \
-                             "$(basename -- "$REPO_DIR")"; do
-        if [[ "$version_candidate" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            JETPACK_VERSION="$version_candidate"
-            break
+JETPACK_VERSION_SOURCE=""
+if [[ -n "$JETPACK_VERSION" ]]; then
+    JETPACK_VERSION_SOURCE="explicit JETPACK_VERSION/--jetpack-version override"
+else
+    # The deployed image is authoritative. setup_jetson.sh writes this file
+    # after all rootfs work, and arbitrary deployment directory names are valid.
+    image_info="$L4T_DIR/rootfs/etc/jetson-image-info"
+    if [[ -r "$image_info" ]]; then
+        detected_version="$(awk -F: '$1 == "JetPack" {sub(/^[[:space:]]+/, "", $2); print $2; exit}' "$image_info")"
+        if [[ "$detected_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            JETPACK_VERSION="$detected_version"
+            JETPACK_VERSION_SOURCE="deployed image metadata ($image_info)"
         fi
-    done
+    fi
+
+    # Older deployed images may lack jetson-image-info. Match their L4T
+    # release against the archive pair when JETSON_ARCHIVE_DIR is supplied.
+    if [[ -z "$JETPACK_VERSION" && -n "$ARCHIVE_DIR" && -r "$L4T_DIR/nv_tegra/nv_tegra_release" ]]; then
+        l4t_release="$(sed -nE 's/^# R([0-9]+) \(release\), REVISION: ([0-9.]+),.*/R\1.\2/p' \
+            "$L4T_DIR/nv_tegra/nv_tegra_release" | head -n 1)"
+        archive_version="$(basename -- "${ARCHIVE_DIR%/}")"
+        if [[ "$archive_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ && -n "$l4t_release" && \
+              -f "$ARCHIVE_DIR/Jetson_Linux_${l4t_release}_aarch64.tbz2" && \
+              -f "$ARCHIVE_DIR/Tegra_Linux_Sample-Root-Filesystem_${l4t_release}_aarch64.tbz2" ]]; then
+            JETPACK_VERSION="$archive_version"
+            JETPACK_VERSION_SOURCE="matched deployed L4T $l4t_release to archive pair in $ARCHIVE_DIR"
+        fi
+    fi
+
+    # Keep supporting deployments and repository checkouts named by version.
+    if [[ -z "$JETPACK_VERSION" ]]; then
+        for version_candidate in "$(basename -- "$(dirname -- "$L4T_DIR")")" \
+                                 "$(basename -- "$REPO_DIR")"; do
+            if [[ "$version_candidate" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+                JETPACK_VERSION="$version_candidate"
+                JETPACK_VERSION_SOURCE="version-named directory ($version_candidate)"
+                break
+            fi
+        done
+    fi
 fi
 VERSION_KNOWN=true
 if [[ -z "$JETPACK_VERSION" ]]; then
     JETPACK_VERSION="unknown"
     VERSION_KNOWN=false
+    printf 'JetPack version could not be detected from deployed image metadata or directory names.\n'
+else
+    if [[ "$JETPACK_VERSION_SOURCE" == "explicit JETPACK_VERSION/--jetpack-version override" ]]; then
+        printf 'JetPack version: %s (%s).\n' "$JETPACK_VERSION" "$JETPACK_VERSION_SOURCE"
+    else
+        printf 'Detected JetPack version: %s (%s).\n' "$JETPACK_VERSION" "$JETPACK_VERSION_SOURCE"
+    fi
 fi
 
 [[ -x "$L4T_DIR/flash.sh" ]] || die "flash.sh not found under $L4T_DIR"
