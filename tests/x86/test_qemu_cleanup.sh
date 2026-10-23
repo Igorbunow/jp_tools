@@ -5,13 +5,22 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 setup_script="$REPO_DIR/setup_jetson.sh"
 
-apt_run_line="$(grep -nF 'qemu_apt_run_update_upgrade "$rootfs_path"' "$setup_script" | cut -d: -f1)"
+apt_run_line="$(grep -nF 'qemu_apt_validate_repositories "$rootfs_path" "$PROJECT_DIR/apt-repositories" "$FORCE_CUSTOM_REPOSITORIES"' "$setup_script" | cut -d: -f1)"
+apt_check_step_line="$(grep -nF 'update_step "Checking rootfs repository availability"' "$setup_script" | cut -d: -f1)"
+apt_check_call_line="$(grep -nF 'qemu_apt_validate_repositories "$rootfs_path" "$PROJECT_DIR/apt-repositories" "$FORCE_CUSTOM_REPOSITORIES"' "$setup_script" | cut -d: -f1)"
+apt_update_step_line="$(grep -nF 'update_step "Updating rootfs system packages"' "$setup_script" | cut -d: -f1)"
+apt_update_call_line="$(grep -nF 'qemu_apt_upgrade_install "$rootfs_path"' "$setup_script" | cut -d: -f1)"
 apt_cleanup_line="$(grep -nF 'cleanup_qemu_rootfs "$rootfs_path"' "$setup_script" | tail -n1 | cut -d: -f1)"
 apt_status_line="$(grep -nE '^[[:space:]]+status=\$\?$' "$setup_script" | tail -n1 | cut -d: -f1)"
 apt_cleanup_status_line="$(grep -nE '^[[:space:]]+cleanup_status=\$\?$' "$setup_script" | cut -d: -f1)"
 if ! ((apt_run_line < apt_status_line && apt_status_line < apt_cleanup_line && \
        apt_cleanup_line < apt_cleanup_status_line)); then
     echo 'FAIL: APT stage must save its result and clean up mounts before returning' >&2
+    exit 1
+fi
+if ! ((apt_check_step_line < apt_check_call_line && apt_check_call_line < apt_update_step_line && \
+       apt_update_step_line < apt_update_call_line && apt_update_call_line < apt_cleanup_line)); then
+    echo 'FAIL: repository validation must be a visible step before package updates' >&2
     exit 1
 fi
 

@@ -10,7 +10,7 @@ jetson_calculate_total_steps() {
         total=$((total + 1))
         [[ "$apply_patches" == true ]] && total=$((total + 1))
     fi
-    [[ "$run_apt" == true ]] && total=$((total + 4))
+    [[ "$run_apt" == true ]] && total=$((total + 5))
     [[ "$run_qemu" == true ]] && total=$((total + 4))
     [[ "$has_rootfs" == true ]] && total=$((total + 1))
     printf '%s\n' "$total"

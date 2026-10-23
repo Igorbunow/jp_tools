@@ -114,6 +114,8 @@ In interactive mode, the script separately asks whether to run `apt-get update`,
 
 Before APT runs, the script normalizes the leading blank lines and comments in NVIDIA's `nv-power-adapter-check` PAM profile. This avoids Perl warnings from `pam-auth-update` on profiles whose preamble it does not parse correctly.
 
+Repository validation is displayed as its own numbered step before the separate rootfs package update step. Before upgrading or installing packages, the script validates all configured repositories with strict `apt-get -o APT::Update::Error-Mode=any update`. If this fails, it can try a matching custom repository profile, but only when explicitly enabled with `--force-repositories` or `JETSON_FORCE_CUSTOM_REPOSITORIES=1`. Profiles live under `apt-repositories/<OS ID>/<codename>/`, with `<OS ID>/default/` as a fallback. On Ubuntu and Debian, their profile sources replace only recognized official distro entries; NVIDIA and other third-party sources remain enabled. If that candidate also fails, the script tries the official Ubuntu/Debian archive endpoints. Other APT-based distributions are never rewritten automatically; custom profiles for them use an explicit `replace-files` manifest. A validated candidate is retained, while complete failure restores the original sources and skips upgrade/install. See [apt-repositories/README.md](../apt-repositories/README.md) for profile formats, manifest rules, and examples.
+
 For a non-interactive run, opt into the APT operation explicitly with `--apt-upgrade` or `JETSON_APT_UPGRADE=1`. Combine it with `-y --skip-qemu` to update and configure the rootfs without opening an interactive shell:
 
 ```bash

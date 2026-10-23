@@ -15,6 +15,24 @@ assert_contains "$out" "L4T directory: $DEFAULT_DIR/Linux_for_Tegra"
 assert_contains "$out" 'Debian patches: enabled'
 assert_contains "$out" 'Rootfs apt update/upgrade (batch): disabled'
 assert_contains "$out" "APT package list: $REPO_DIR/qemu-packages.txt"
+assert_contains "$out" 'Custom APT repositories (force): disabled'
+
+out="$(bash "$SETUP" --force-repositories --print-paths 2>&1)"
+assert_contains "$out" 'Custom APT repositories (force): enabled'
+
+out="$(JETSON_FORCE_CUSTOM_REPOSITORIES=1 bash "$SETUP" --print-paths 2>&1)"
+assert_contains "$out" 'Custom APT repositories (force): enabled'
+
+out="$(JETSON_FORCE_CUSTOM_REPOSITORIES=0 bash "$SETUP" --force-repositories --print-paths 2>&1)"
+assert_contains "$out" 'Custom APT repositories (force): enabled'
+
+if out="$(JETSON_FORCE_CUSTOM_REPOSITORIES=yes bash "$SETUP" --print-paths 2>&1)"; then
+    fail 'setup_jetson accepted an invalid JETSON_FORCE_CUSTOM_REPOSITORIES value'
+fi
+assert_contains "$out" 'JETSON_FORCE_CUSTOM_REPOSITORIES must be 0 or 1'
+
+out="$(bash "$SETUP" --force --print-paths 2>&1)"
+assert_contains "$out" 'Custom APT repositories (force): disabled'
 
 
 out="$(bash "$SETUP" --force-qemu-cleanup --print-paths 2>&1)"

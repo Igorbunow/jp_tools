@@ -53,8 +53,8 @@ grep -Fq 'update_step "$ROOT_UART_MESSAGE"' "$setup_script" || {
 grep -Fq 'TOTAL_STEPS="$(jetson_calculate_total_steps' "$setup_script" || {
     echo 'FAIL: progress total must reflect the selected stages' >&2; exit 1;
 }
-grep -Fq 'update_step "Updating rootfs with APT"' "$setup_script" || {
-    echo 'FAIL: APT update must be shown as a progress step' >&2; exit 1;
+grep -Fq 'update_step "Checking rootfs repository availability"' "$setup_script" || {
+    echo 'FAIL: rootfs repository validation must be shown as a progress step' >&2; exit 1;
 }
 grep -Fq 'update_step "Entering QEMU chroot for configuration"' "$setup_script" || {
     echo 'FAIL: interactive QEMU chroot must be shown as a progress step' >&2; exit 1;

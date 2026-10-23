@@ -34,6 +34,7 @@ JETPACK_VERSION="${JETPACK_VERSION:-}"
 PRINT_PATHS=false
 APT_UPGRADE_BATCH=false
 FORCE_QEMU_CLEANUP=false
+FORCE_CUSTOM_REPOSITORIES=false
 APT_PACKAGES_FILE="${JETSON_APT_PACKAGES_FILE:-$PROJECT_DIR/qemu-packages.txt}"
 
 case "${JETSON_SKIP_DEBIAN_PATCHES:-0}" in
@@ -45,6 +46,11 @@ case "${JETSON_APT_UPGRADE:-0}" in
     1) APT_UPGRADE_BATCH=true ;;
     0) ;;
     *) echo "JETSON_APT_UPGRADE must be 0 or 1" >&2; exit 2 ;;
+esac
+case "${JETSON_FORCE_CUSTOM_REPOSITORIES:-0}" in
+    1) FORCE_CUSTOM_REPOSITORIES=true ;;
+    0) ;;
+    *) qemu_apt_validate_force_repositories "${JETSON_FORCE_CUSTOM_REPOSITORIES}"; exit 2 ;;
 esac
 
 # Release archives are selected as a matching pair, so R36.4.x (JetPack 6.2.2)
@@ -77,6 +83,8 @@ usage() {
     echo "  JETSON_QEMU_NAMESERVERS=... DNS servers for rootfs without nameservers (default: 8.8.8.8 1.1.1.1)"
     echo "  --force-qemu-cleanup   Terminate/recover a stale QEMU session in batch mode"
     echo "  --apt-upgrade          Run apt update/upgrade in batch mode"
+    echo "  --force-repositories   Try the matching custom APT repository profile after source errors"
+    echo "  JETSON_FORCE_CUSTOM_REPOSITORIES=1  Enable custom APT repository profiles"
     echo "  --apt-packages-file <path> Package list file (default: $APT_PACKAGES_FILE)"
     echo "  JETSON_APT_UPGRADE=1   Enable apt update/upgrade in batch mode"
     echo "  --skip-debian-patches  Do not run setup_debian.sh"
@@ -102,6 +110,7 @@ while [[ $# -gt 0 ]]; do
         --skip-qemu) SKIP_QEMU=true; shift ;;
         --force-qemu-cleanup) FORCE_QEMU_CLEANUP=true; shift ;;
         --apt-upgrade) APT_UPGRADE_BATCH=true; shift ;;
+        --force-repositories) FORCE_CUSTOM_REPOSITORIES=true; shift ;;
         --apt-packages-file) APT_PACKAGES_FILE="${2:?--apt-packages-file requires a path}"; shift 2 ;;
         --skip-debian-patches) SKIP_DEBIAN_PATCHES=true; shift ;;
         --no-root-uart-login) ROOT_UART_AUTOLOGIN=false; shift ;;
@@ -149,6 +158,11 @@ if [[ "$PRINT_PATHS" == true ]]; then
         printf 'Rootfs apt update/upgrade (batch): disabled\n'
     fi
     printf 'APT package list: %s\n' "$APT_PACKAGES_FILE"
+    if [[ "$FORCE_CUSTOM_REPOSITORIES" == true ]]; then
+        printf 'Custom APT repositories (force): enabled\n'
+    else
+        printf 'Custom APT repositories (force): disabled\n'
+    fi
     exit 0
 fi
 
@@ -420,6 +434,10 @@ qemu_handle_signal() {
 
     if [[ -n "$QEMU_ROOTFS_ACTIVE" ]]; then
         print_notice "Emergency cleanup after $signal_name: cleaning QEMU rootfs mounts..."
+        if [[ -n "$QEMU_APT_REPOSITORY_BACKUP_DIR" ]]; then
+            print_notice "Restoring APT repository sources after interruption..."
+            qemu_apt_restore_repository_sources "$QEMU_APT_REPOSITORY_BACKUP_ROOTFS" || true
+        fi
         cleanup_qemu_rootfs "$QEMU_ROOTFS_ACTIVE" || true
     fi
     if [[ "$QEMU_SESSION_HELD" == true ]]; then
@@ -471,9 +489,14 @@ update_rootfs_packages() {
     begin_qemu_session "$rootfs_path" || { QEMU_APT_FAILED_STEP="stale QEMU session recovery"; return 1; }
     prepare_qemu_rootfs "$rootfs_path" || { abort_qemu_session "$rootfs_path" || true; return 1; }
     qemu_session_set_phase "apt-update-upgrade" || { abort_qemu_session "$rootfs_path" || true; return 1; }
-    update_step "Updating rootfs with APT"
-    qemu_apt_run_update_upgrade "$rootfs_path"
+    update_step "Checking rootfs repository availability"
+    qemu_apt_validate_repositories "$rootfs_path" "$PROJECT_DIR/apt-repositories" "$FORCE_CUSTOM_REPOSITORIES"
     status=$?
+    if ((status == 0)); then
+        update_step "Updating rootfs system packages"
+        qemu_apt_upgrade_install "$rootfs_path"
+        status=$?
+    fi
     update_step "Unmounting QEMU rootfs resources"
     cleanup_qemu_rootfs "$rootfs_path"
     cleanup_status=$?
