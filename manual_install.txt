@@ -1,0 +1,50 @@
+soorce: https://developer.nvidia.com/embedded/jetson-linux-r3643
+
+Jetson_Linux_r36.4.3_aarch64.tbz2
+Tegra_Linux_Sample-Root-Filesystem_r36.4.3_aarch64.tbz2
+
+Request HOST PC: UBUNTU 22.04 LTC
+
+
+
+1) Copy the above required files to the same directory of the burning host
+
+2) Unzip the Linux Driver Package
+
+Generate the folder directory Linux_for_Tegra
+tar -vxf Jetson_Linux_R36.4.3_aarch64.tbz2
+
+3) Set the root file system
+
+Enter the root file system directory of the Linux Driver Package
+
+$ cd <your_L4T_root>/Linux_for_Tegra/rootfs 2. The Root File of the System is not in the Root File.
+
+$ sudo tar -jxpf ../../Tegra_Linux_Sample-Root-Filesystem_r36.4.3_aarch64.tbz2
+
+
+4) Copy file to
+	A) Orin-jetson_agx_orin-padvoltage-default.dtsi → Linux_for_Tegra/bootloader/t186ref/BCT
+	B) Orin-jetson_agx_orin-pinmux.dtsi    → Linux_for_Tegra/bootloader/t186ref/BCT
+	C) Orin-jetson_agx_orin-gpio-default.dtsi       → Linux_for_Tegra/bootloader
+
+	D) tegra234-p3701-gmii_nvme_2eth_audio_64.dtb → Linux_for_Tegra/kernel/dtb
+	E) tegra234-p3701-gmii_nvme_2eth_audio_32.dtb → Linux_for_Tegra/kernel/dtb
+	F) tegra234-p3701-gmii_nvme_ext_pci_64.dtb    → Linux_for_Tegra/kernel/dtb
+	G) tegra234-p3701-gmii_nvme_ext_pci_32.dtb    → Linux_for_Tegra/kernel/dtb
+
+	K) p3701_custom.conf.common             → Linux_for_Tegra
+	L) jetson-agx-orin-gmii_2pci.conf       → Linux_for_Tegra
+	M) jetson-agx-orin-gmii_2eth_audio.conf → Linux_for_Tegra
+	
+5) ./apply_binaries.sh
+6) tools/l4t_create_default_user.sh -u nvidia -p nvidia -a -n nvidia-agx-orin --accept-license
+7) Choose:
+	IDS-AGX-PEx4 (PCIe x8): ./flash.sh  jetson-agx-orin-gmii_2pci mmcblk0p1
+	IDS-AiS-AGX: ./flash.sh  jetson-agx-orin-gmii_2eth_audio mmcblk0p1
+
+8) First run:
+ssh-keygen -A
+
+systemctl disable nv-l4t-usb-device-mode.service
+systemctl mask nv-l4t-usb-device-mode.service

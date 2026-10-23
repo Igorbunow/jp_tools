@@ -1,0 +1,12 @@
+[Unit]
+Description=/etc/can_enable Compatibility
+ConditionPathExists=/etc/can_enable
+[Service]
+Type=forking
+ExecStart=/etc/can_enable start
+TimeoutSec=0
+StandardOutput=tty
+RemainAfterExit=yes
+SysVStartPriority=99
+[Install]
+WantedBy=multi-user.target

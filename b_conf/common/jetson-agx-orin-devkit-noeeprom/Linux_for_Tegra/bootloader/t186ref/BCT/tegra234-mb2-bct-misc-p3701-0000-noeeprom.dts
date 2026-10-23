@@ -1,0 +1,13 @@
+/*
+ * @file     tegra234-mb2-bct-misc-p3701-0000-noeeprom.dts
+ * @author   Project maintainers
+ * @date     Oct, 2026
+ * @version  V1.0.0
+ * @brief    R35 MB2 BCT variant that skips carrier EEPROM reads.
+ * @details  Keeps the release-specific MB2 defaults and overrides only CVB
+ *           EEPROM read size. The CVM/module EEPROM remains enabled.
+ */
+/dts-v1/;
+
+#include "tegra234-mb2-bct-common.dtsi"
+#include "generic/BCT/tegra234-mb2-bct-ids-cvb-eeprom-override.dtsi"

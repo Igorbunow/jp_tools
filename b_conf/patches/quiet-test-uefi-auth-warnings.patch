@@ -1,0 +1,14 @@
+--- a/optee/optee_os/core/pta/tegra/jetson_user_key_pta.c
++++ b/optee/optee_os/core/pta/tegra/jetson_user_key_pta.c
+@@ -920,9 +920,9 @@
+ 				EMSG("UEFI variable auth key not set !");
+ 				goto error;
+ 			} else {
+-				IMSG("WARNING: Test UEFI variable auth "
++				DMSG("WARNING: Test UEFI variable auth "
+ 						"key is being used !");
+-				IMSG("WARNING: UEFI variable protection "
++				DMSG("WARNING: UEFI variable protection "
+ 						"is not fully enabled !");
+ 				key = uefi_vars_auth_key_test;
+ 			}
