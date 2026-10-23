@@ -414,6 +414,9 @@ prepare_qemu_rootfs() {
     local rootfs_path="$1"
     update_step "Preparing QEMU rootfs"
     qemu_session_set_phase "preparing-rootfs" || return 1
+
+    # Recover an exact temporary APT pin left by a forcibly terminated run.
+    qemu_apt_cleanup_upgrade_pin "$rootfs_path" || return 1
     
     if ! command -v qemu-aarch64-static &> /dev/null; then
         print_notice "Installing qemu-user-static on the host..."
@@ -452,6 +455,7 @@ cleanup_qemu_rootfs() {
         fi
     done
     qemu_restore_rootfs_resolv "$rootfs_path/etc/resolv.conf" || failed=true
+    qemu_apt_cleanup_upgrade_pin "$rootfs_path" || failed=true
 
     if [[ "$failed" == true ]]; then
         print_error "Error: QEMU rootfs cleanup failed for $rootfs_path. Check its mount points and resolver backup."

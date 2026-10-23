@@ -420,6 +420,14 @@ grep -Fq 'apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--for
 }
 grep -Fq 'LANG=C LC_ALL=C LANGUAGE=C DEBIAN_FRONTEND=noninteractive apt-get -y' "$JETSON_TEST_LOG" || { echo 'FAIL: APT upgrade/install must use a generated locale-independent environment' >&2; exit 1; }
 grep -Fq 'install mc vim' "$JETSON_TEST_LOG" || { echo 'FAIL: package list was not applied' >&2; exit 1; }
+pin_create_line="$(grep -nF 'install -D -m 0644' "$JETSON_TEST_LOG" | head -n1 | cut -d: -f1)"
+upgrade_line="$(grep -nF 'apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade' "$JETSON_TEST_LOG" | head -n1 | cut -d: -f1)"
+[[ -n "$pin_create_line" && -n "$upgrade_line" && "$pin_create_line" -lt "$upgrade_line" ]] || {
+    echo 'FAIL: temporary NVIDIA BSP APT pin was not installed before upgrade' >&2; exit 1;
+}
+[[ ! -e "$fixture/rootfs/etc/apt/preferences.d/90-jetson-qemu-no-l4t-upgrade" ]] || {
+    echo 'FAIL: temporary NVIDIA BSP package pin remained after APT completed' >&2; exit 1;
+}
 
 : > "$JETSON_TEST_LOG"
 printf 'mc;touch /tmp/bad\n' > "$packages"
@@ -460,4 +468,18 @@ for failure_case in \
             echo 'FAIL: package upgrade/install ran after repository validation failed' >&2; exit 1;
         fi
     fi
+    [[ ! -e "$fixture/rootfs/etc/apt/preferences.d/90-jetson-qemu-no-l4t-upgrade" ]] || {
+        echo "FAIL: temporary NVIDIA BSP package pin remained after $expected_step failure" >&2; exit 1;
+    }
 done
+
+pin_file="$fixture/rootfs/etc/apt/preferences.d/90-jetson-qemu-no-l4t-upgrade"
+mkdir -p "$(dirname -- "$pin_file")"
+qemu_apt_upgrade_pin_content > "$pin_file"
+qemu_apt_cleanup_upgrade_pin "$fixture/rootfs"
+[[ ! -e "$pin_file" ]] || { echo 'FAIL: stale temporary NVIDIA BSP pin was not recovered' >&2; exit 1; }
+printf 'Package: user-custom\n' > "$pin_file"
+if qemu_apt_cleanup_upgrade_pin "$fixture/rootfs" >/dev/null 2>&1; then
+    echo 'FAIL: cleanup removed an unexpected user APT preferences file' >&2; exit 1
+fi
+[[ -f "$pin_file" ]] || { echo 'FAIL: unexpected APT preferences file was removed' >&2; exit 1; }

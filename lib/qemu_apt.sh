@@ -8,6 +8,56 @@ QEMU_APT_REPOSITORY_BACKUP_ROOTFS=""
 QEMU_APT_REPOSITORY_OS_ID=""
 QEMU_APT_REPOSITORY_ATTEMPTS=""
 QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE=false
+QEMU_APT_UPGRADE_PIN_FILE=""
+
+qemu_apt_upgrade_pin_content() {
+    cat <<'EOF'
+Package: nvidia-l4t-*
+Pin: version *
+Pin-Priority: -1
+EOF
+}
+
+qemu_apt_cleanup_upgrade_pin() {
+    local rootfs_path="$1"
+    local pin_file="$rootfs_path/etc/apt/preferences.d/90-jetson-qemu-no-l4t-upgrade"
+    local expected_file
+
+    [[ -e "$pin_file" ]] || { QEMU_APT_UPGRADE_PIN_FILE=""; return 0; }
+    expected_file="$(mktemp)" || return 1
+    qemu_apt_upgrade_pin_content > "$expected_file"
+    if ! cmp -s -- "$expected_file" "$pin_file"; then
+        rm -f -- "$expected_file"
+        printf 'Refusing to remove unexpected APT preferences file: %s\n' "$pin_file" >&2
+        return 1
+    fi
+    rm -f -- "$expected_file"
+    if [[ -w "$pin_file" ]]; then
+        rm -f -- "$pin_file"
+    else
+        sudo rm -f -- "$pin_file"
+    fi || return 1
+    QEMU_APT_UPGRADE_PIN_FILE=""
+}
+
+qemu_apt_prepare_upgrade_pin() {
+    local rootfs_path="$1"
+    local pin_file="$rootfs_path/etc/apt/preferences.d/90-jetson-qemu-no-l4t-upgrade"
+    local temporary_file
+
+    qemu_apt_cleanup_upgrade_pin "$rootfs_path" || return 1
+    temporary_file="$(mktemp)" || return 1
+    qemu_apt_upgrade_pin_content > "$temporary_file"
+    if [[ -w "$(dirname -- "$pin_file")" ]]; then
+        install -D -m 0644 -- "$temporary_file" "$pin_file"
+    else
+        sudo install -D -m 0644 -- "$temporary_file" "$pin_file"
+    fi
+    local status=$?
+    rm -f -- "$temporary_file"
+    ((status == 0)) || return "$status"
+    QEMU_APT_UPGRADE_PIN_FILE="$pin_file"
+}
 
 qemu_apt_validate_force_repositories() {
     case "$1" in
@@ -603,26 +653,44 @@ qemu_apt_validate_repositories() {
 qemu_apt_upgrade_install() {
     local rootfs_path="$1"
     local status
+    local failed_step=""
+    local cleanup_status=0
+
+    qemu_apt_prepare_upgrade_pin "$rootfs_path"
+    status=$?
+    if ((status != 0)); then
+        QEMU_APT_FAILED_STEP="protecting NVIDIA BSP packages during QEMU APT"
+        QEMU_APT_EXIT_STATUS="$status"
+        return "$status"
+    fi
 
     qemu_apt_run_in_rootfs "$rootfs_path" \
         apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
     status=$?
     if ((status != 0)); then
-        QEMU_APT_FAILED_STEP="apt-get upgrade"
-        QEMU_APT_EXIT_STATUS="$status"
-        return "$status"
+        failed_step="apt-get upgrade"
     fi
 
-    if ((${#QEMU_APT_PACKAGES[@]})); then
+    if ((status == 0)) && ((${#QEMU_APT_PACKAGES[@]})); then
         qemu_apt_run_in_rootfs "$rootfs_path" \
             apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
             install "${QEMU_APT_PACKAGES[@]}"
         status=$?
         if ((status != 0)); then
-            QEMU_APT_FAILED_STEP="apt-get install"
-            QEMU_APT_EXIT_STATUS="$status"
-            return "$status"
+            failed_step="apt-get install"
         fi
+    fi
+
+    qemu_apt_cleanup_upgrade_pin "$rootfs_path" || cleanup_status=$?
+    if ((cleanup_status != 0)); then
+        QEMU_APT_FAILED_STEP="restoring temporary NVIDIA BSP APT pin"
+        QEMU_APT_EXIT_STATUS="$cleanup_status"
+        return "$cleanup_status"
+    fi
+    if [[ -n "$failed_step" ]]; then
+        QEMU_APT_FAILED_STEP="$failed_step"
+        QEMU_APT_EXIT_STATUS="$status"
+        return "$status"
     fi
 }
 
