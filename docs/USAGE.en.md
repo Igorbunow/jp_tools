@@ -34,7 +34,7 @@ If `sudo` is not installed yet, run `apt-get` as root (for example, from `su -`)
 
 ### Optional QEMU chroot
 
-The optional chroot stage needs `qemu-user-static`. `setup_jetson.sh` installs it automatically if the stage is selected and the `qemu-aarch64-static` binary is missing. Use `--skip-qemu` to skip the stage.
+The optional chroot stage needs `qemu-user-static`. `setup_jetson.sh` installs it automatically if the stage is selected and the `qemu-aarch64-static` binary is missing. Use `--skip-qemu` to skip the stage. Before entering the chroot, the script checks the temporary rootfs `/etc/resolv.conf`; if it has no active `nameserver` line, it adds `8.8.8.8` and `1.1.1.1`. Override these fallback addresses with a whitespace-separated `JETSON_QEMU_NAMESERVERS` value, for example `JETSON_QEMU_NAMESERVERS="9.9.9.9 149.112.112.112"`. An existing nameserver entry is preserved as-is.
 
 ### Optional OP-TEE warning-suppression build
 
@@ -87,6 +87,14 @@ Version options are different:
 If `--version` is omitted, the newest matching L4T/rootfs archive pair is selected. If `--jetpack-version` is omitted, the script uses the name of the directory containing `setup_jetson.sh`. When the repository is cloned into a generic directory such as `jp_tools`, pass `--jetpack-version` explicitly.
 
 The default archive directory and deployment base directory are both `/opt/nvidia/jp/6.2.3`, producing `/opt/nvidia/jp/6.2.3/Linux_for_Tegra`. Set `--archive-dir PATH` and `--deploy-dir PATH` (or `JETSON_ARCHIVE_DIR` and `JETSON_DEPLOY_DIR`) to use separate locations. If only one is set, it becomes the shared path for both. The legacy `--dir PATH` remains an alias for `--deploy-dir`. `./setup_jetson.sh --print-paths` displays the resolved paths without starting deployment. Project resources such as `root_fs/`, `b_conf/`, and `setup_debian.sh` are always taken from the repository. The setup script extracts L4T and rootfs, runs `apply_binaries.sh`, creates the requested default user, copies the overlay, optionally extracts public sources, installs the selected `b_conf` payload, then applies Debian compatibility patches to the chosen L4T tree.
+
+Debian compatibility patches are applied by default. When running on a host release that supports NVIDIA's tools, you can manually skip this step with `--skip-debian-patches` or `JETSON_SKIP_DEBIAN_PATCHES=1`. The environment variable accepts only `0` (default, apply patches) or `1` (skip). The script does not detect the host OS or change this choice automatically. For example:
+
+```bash
+JETSON_SKIP_DEBIAN_PATCHES=1 ./setup_jetson.sh --jetpack-version 6.2.3 --version R36.5.2
+# or
+./setup_jetson.sh --skip-debian-patches --jetpack-version 6.2.3 --version R36.5.2
+```
 
 Example with separate storage:
 

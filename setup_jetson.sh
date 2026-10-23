@@ -6,6 +6,8 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_SHARED_DIR="/opt/nvidia/jp/6.2.3"
 ARCHIVE_DIR="${JETSON_ARCHIVE_DIR:-}"
 DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
+# shellcheck source=lib/qemu_resolv.sh
+source "$PROJECT_DIR/lib/qemu_resolv.sh"
 
 # Параметры по умолчанию
 JETSON_USER="${JETSON_USER:-nvidia}"
@@ -14,11 +16,18 @@ JETSON_HOST="${JETSON_HOST:-nvidia-agx-orin}"
 SILENT_MODE=false
 FORCE_DELETE=false
 SKIP_QEMU=false
+SKIP_DEBIAN_PATCHES=false
 ROOT_UART_AUTOLOGIN=true
 JETSON_BOARD="${JETSON_BOARD:-jetson-agx-orin-devkit-noeeprom}"
 L4T_VERSION="${L4T_VERSION:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-}"
 PRINT_PATHS=false
+
+case "${JETSON_SKIP_DEBIAN_PATCHES:-0}" in
+    1) SKIP_DEBIAN_PATCHES=true ;;
+    0) ;;
+    *) echo "JETSON_SKIP_DEBIAN_PATCHES must be 0 or 1" >&2; exit 2 ;;
+esac
 
 # Release archives are selected as a matching pair, so R36.4.x (JetPack 6.2.2)
 # and R36.5.x (JetPack 6.2.3) deployments both work from this directory.
@@ -47,6 +56,8 @@ usage() {
     echo "  -y, --yes              Тихий режим (пакетный режим)"
     echo "  -f, --force            Принудительное удаление старой установки"
     echo "  --skip-qemu            Пропустить этап QEMU chroot"
+    echo "  JETSON_QEMU_NAMESERVERS=... DNS-серверы для rootfs без nameserver (default: 8.8.8.8 1.1.1.1)"
+    echo "  --skip-debian-patches  Не запускать setup_debian.sh"
     echo "  --version <version>    Версия L4T (по умолчанию последняя полная пара)"
     echo "  --board <name>         Имя профиля flash.sh (default: jetson-agx-orin-devkit-noeeprom)"
     echo "  --jetpack-version <v>  Версия для выбора b_conf (по умолчанию имя каталога архивов)"
@@ -67,6 +78,7 @@ while [[ $# -gt 0 ]]; do
         -y|--yes) SILENT_MODE=true; shift ;;
         -f|--force) FORCE_DELETE=true; shift ;;
         --skip-qemu) SKIP_QEMU=true; shift ;;
+        --skip-debian-patches) SKIP_DEBIAN_PATCHES=true; shift ;;
         --no-root-uart-login) ROOT_UART_AUTOLOGIN=false; shift ;;
         --version) L4T_VERSION="$2"; shift 2 ;;
         --board) JETSON_BOARD="$2"; shift 2 ;;
@@ -97,6 +109,11 @@ if [[ "$PRINT_PATHS" == true ]]; then
     printf 'Deployment base directory: %s\n' "$DEPLOY_BASE_DIR"
     printf 'L4T directory: %s\n' "$TARGET_DIR"
     printf 'JetPack version: %s\n' "$JETPACK_VERSION"
+    if [[ "$SKIP_DEBIAN_PATCHES" == true ]]; then
+        printf 'Debian patches: skipped\n'
+    else
+        printf 'Debian patches: enabled\n'
+    fi
     exit 0
 fi
 
@@ -306,6 +323,16 @@ setup_qemu_chroot() {
     fi
     
     sudo cp /usr/bin/qemu-aarch64-static "$rootfs_path/usr/bin/"
+
+    # Save the rootfs resolver, then use the host resolver for the temporary
+    # chroot session. Add fallback DNS only when it has no active nameserver.
+    [ -f "$rootfs_path/etc/resolv.conf" ] && sudo mv "$rootfs_path/etc/resolv.conf" "$rootfs_path/etc/resolv.conf.bak"
+    sudo cp /etc/resolv.conf "$rootfs_path/etc/resolv.conf"
+    if ! qemu_ensure_nameservers "$rootfs_path/etc/resolv.conf"; then
+        sudo rm -f "$rootfs_path/etc/resolv.conf"
+        [ -f "$rootfs_path/etc/resolv.conf.bak" ] && sudo mv "$rootfs_path/etc/resolv.conf.bak" "$rootfs_path/etc/resolv.conf"
+        return 1
+    fi
     
     echo "Монтирование ресурсов..."
     sudo mount -t proc /proc "$rootfs_path/proc"
@@ -313,10 +340,6 @@ setup_qemu_chroot() {
     sudo mount --bind /dev "$rootfs_path/dev"
     sudo mount --bind /dev/pts "$rootfs_path/dev/pts"
     
-    # Резервное копирование resolv.conf
-    [ -f "$rootfs_path/etc/resolv.conf" ] && sudo mv "$rootfs_path/etc/resolv.conf" "$rootfs_path/etc/resolv.conf.bak"
-    sudo cp /etc/resolv.conf "$rootfs_path/etc/resolv.conf"
-
     echo -e "${GREEN}Вход в окружение (с подавлением ошибок локалей)...${NC}"
     # Запускаем chroot с чистыми переменными локали
     sudo chroot "$rootfs_path" /usr/bin/env LANG=C LC_ALL=C LANGUAGE=C /bin/bash
@@ -377,7 +400,11 @@ fi
 
 if [ -d "$TARGET_DIR" ]; then
     copy_board_configuration || exit 1
-    apply_debian_patches || exit 1
+    if [[ "$SKIP_DEBIAN_PATCHES" == true ]]; then
+        echo "Skipping Debian compatibility patches by request."
+    else
+        apply_debian_patches || exit 1
+    fi
     echo -e "\n${GREEN}Подготовка завершена. После включения платы и подтверждения режима Recovery запустить:${NC}"
     echo "  cd \"$TARGET_DIR\" && sudo ./flash.sh $JETSON_BOARD mmcblk0p1"
 fi
@@ -385,7 +412,7 @@ fi
 # QEMU Шаг всегда спрашиваем, если не пропущен флагом
 if [ "$SKIP_QEMU" = false ]; then
     if confirm "Требуется ли войти в chroot через QEMU для настройки?"; then
-        setup_qemu_chroot
+        setup_qemu_chroot || exit 1
     fi
 fi
 

@@ -8,7 +8,7 @@ Utilities and board configuration profiles for preparing and flashing NVIDIA Jet
 
 ## What is included
 
-- `setup_jetson.sh` — deploys a matching L4T and Sample Root Filesystem archive pair, applies NVIDIA binaries, creates the default user, installs the selected board profile, applies Debian host fixes, and configures optional UART root autologin.
+- `setup_jetson.sh` — deploys a matching L4T and Sample Root Filesystem archive pair, applies NVIDIA binaries, creates the default user, installs the selected board profile, applies Debian host fixes by default, and configures optional UART root autologin. For QEMU chroot, it adds fallback DNS servers when rootfs has none. See the usage guide for overriding them. On a supported Ubuntu host, skip the Debian patch step manually with `--skip-debian-patches` or `JETSON_SKIP_DEBIAN_PATCHES=1`.
 - `setup_debian.sh` — installs required host packages and patches L4T scripts for Debian compatibility.
 - `b_conf/` — board profiles, compatibility journals, profile selector, and flashing utilities.
 - `b_conf/flash_jetson.sh` — lists profiles for a JetPack version, checks USB Recovery before installing a profile, and flashes a complete image, both DTB slots, or only rootfs. Interactively, it offers retry or quit if Recovery is absent.

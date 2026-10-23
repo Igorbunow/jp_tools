@@ -12,6 +12,16 @@ out="$(env -u JETSON_ARCHIVE_DIR -u JETSON_DEPLOY_DIR bash "$SETUP" --print-path
 assert_contains "$out" "Archive directory: $DEFAULT_DIR"
 assert_contains "$out" "Deployment base directory: $DEFAULT_DIR"
 assert_contains "$out" "L4T directory: $DEFAULT_DIR/Linux_for_Tegra"
+assert_contains "$out" 'Debian patches: enabled'
+
+out="$(JETSON_SKIP_DEBIAN_PATCHES=1 bash "$SETUP" --print-paths 2>&1)"
+assert_contains "$out" 'Debian patches: skipped'
+
+out="$(env -u JETSON_SKIP_DEBIAN_PATCHES bash "$SETUP" --skip-debian-patches --print-paths 2>&1)"
+assert_contains "$out" 'Debian patches: skipped'
+
+out="$(JETSON_SKIP_DEBIAN_PATCHES=0 bash "$SETUP" --skip-debian-patches --print-paths 2>&1)"
+assert_contains "$out" 'Debian patches: skipped'
 
 out="$(env -u JETSON_DEPLOY_DIR JETSON_ARCHIVE_DIR=/tmp/jetson-archives bash "$SETUP" --print-paths 2>&1 || true)"
 assert_contains "$out" 'Archive directory: /tmp/jetson-archives'
