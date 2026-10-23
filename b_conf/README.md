@@ -70,6 +70,19 @@ the USB sysfs path used for Recovery detection (default
 installing or flashing. `--yes` bypasses the interactive USB Recovery and
 data-write confirmation in batch mode.
 
+Before a full or rootfs flash, the utility prints the APP/rootfs partition
+size. The default comes from the selected board configuration and may be a
+smaller debug size; it is not assumed to be the maximum. Set
+`--rootfs-size 16GiB` or `JETSON_ROOTFS_SIZE=16GiB` to choose a size, or use
+`--rootfs-size max` / `JETSON_ROOTFS_SIZE=max` for the maximum specified by the
+BSP's shared board configuration or profile `ROOTFS_SIZE` metadata. If the
+maximum cannot be determined (for example, one profile targets modules with
+different capacities), use `--force-rootfs-size 16GiB` to set the size. That
+option also permits a size above a known limit and prints a warning. Without it,
+an explicit size is rejected when it exceeds a known limit or the maximum is
+unknown. The chosen size is passed to `flash.sh` with `-S` and
+`IDS_ROOTFS_SIZE`. DTB-only flashes do not change rootfs size.
+
 ## Optional OP-TEE test-key warning suppression
 
 `suppress_uefi_auth_warnings.sh` provides an opt-in source patch for the two

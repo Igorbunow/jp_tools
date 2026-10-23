@@ -12,6 +12,11 @@ JETPACK_VERSION="${JETPACK_VERSION:-}"
 BOARD=""
 MODE=""
 ROOTDEV="mmcblk0p1"
+ROOTFS_SIZE_REQUESTED="${JETSON_ROOTFS_SIZE:-}"
+ROOTFS_SIZE_RESOLVED=""
+ROOTFS_SIZE_SOURCE=""
+ROOTFS_SIZE_FOR_FLASH=false
+FORCE_ROOTFS_SIZE=false
 ASSUME_YES=false
 DRY_RUN=false
 LIST_ONLY=false
@@ -28,6 +33,8 @@ Options:
   --l4t-dir PATH               Use this exact Linux_for_Tegra directory.
   --deploy-dir PATH            Use PATH/Linux_for_Tegra as the deployment.
   --rootdev DEVICE             flash.sh root device (default: mmcblk0p1).
+  --rootfs-size SIZE           Rootfs size (e.g. 8GiB); use 'max' for the BSP/profile maximum.
+  --force-rootfs-size SIZE     Force this explicit size if the profile's maximum is unknown or exceeded.
   --yes                        Confirm BSP changes and destructive flash in batch mode.
   --dry-run                    Print planned file copies and flash commands only.
   -h, --help                   Show this help.
@@ -36,6 +43,7 @@ Environment variables:
   JETSON_DEPLOY_DIR            Base deployment directory; uses PATH/Linux_for_Tegra.
   JETSON_ARCHIVE_DIR           Archive directory; used to match the deployed L4T release when image metadata is absent.
   JETSON_L4T_DIR               Exact Linux_for_Tegra directory (takes precedence).
+  JETSON_ROOTFS_SIZE           Rootfs size passed to flash.sh; supports a size or 'max'.
   JETPACK_VERSION              JetPack version used to resolve versioned profiles.
   JETSON_USB_SYSFS_ROOT        USB sysfs root used for Recovery detection (default: /sys/bus/usb/devices).
 
@@ -45,10 +53,119 @@ Examples:
   $0 --board jetson-agx-orin-devkit-noeeprom --mode full --yes
   $0 --board jetson-agx-orin-10g_4eth_pci_nvme_dp --mode dtb --yes
   $0 --board jetson-agx-orin-devkit-noeeprom --mode rootfs --dry-run
+  $0 --board jetson-agx-orin-devkit-noeeprom --mode full --rootfs-size max
 EOF
 }
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+
+valid_rootfs_size() {
+    [[ "$1" =~ ^[0-9]+(KiB|MiB|GiB)?$ ]]
+}
+
+rootfs_size_bytes() {
+    local value="$1" number unit multiplier
+    if [[ "$value" =~ ^([0-9]+)(KiB|MiB|GiB)?$ ]]; then
+        number="${BASH_REMATCH[1]}"
+        unit="${BASH_REMATCH[2]:-B}"
+    else
+        return 1
+    fi
+    case "$unit" in
+        B) multiplier=1 ;;
+        KiB) multiplier=1024 ;;
+        MiB) multiplier=$((1024 * 1024)) ;;
+        GiB) multiplier=$((1024 * 1024 * 1024)) ;;
+    esac
+    printf '%s\n' "$((number * multiplier))"
+}
+
+bsp_profile_rootfs_size() {
+    local config="$SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf"
+    [[ -r "$config" ]] || return 1
+    LDK_DIR="$L4T_DIR" bash --noprofile --norc -c '
+        LDK_DIR="$1"
+        export LDK_DIR
+        source "$2" >/dev/null 2>&1 || exit 1
+        printf "%s\n" "${ROOTFSSIZE:-}"
+    ' _ "$L4T_DIR" "$config"
+}
+
+bsp_max_rootfs_size() {
+    local config="$L4T_DIR/p3701.conf.common"
+    [[ -r "$config" ]] || return 1
+    bash --noprofile --norc -c '
+        source "$1" >/dev/null 2>&1 || exit 1
+        printf "%s\n" "${ROOTFSSIZE:-}"
+    ' _ "$config"
+}
+
+resolve_rootfs_size() {
+    local metadata="$SELECTED_BUNDLE/ROOTFS_SIZE"
+    local line key value bsp_size="" bsp_max=""
+    local default_size="" max_size=""
+
+    if [[ -r "$metadata" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%%#*}"
+            [[ "$line" == *=* ]] || continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            value="${value//[[:space:]]/}"
+            case "$key" in
+                DEFAULT) default_size="$value" ;;
+                MAX) max_size="$value" ;;
+                *) die "unknown key '$key' in $metadata" ;;
+            esac
+        done < "$metadata"
+    fi
+
+    if [[ -z "$default_size" ]]; then
+        bsp_size="$(bsp_profile_rootfs_size 2>/dev/null || true)"
+        default_size="$bsp_size"
+    fi
+    if [[ -z "$max_size" ]]; then
+        bsp_max="$(bsp_max_rootfs_size 2>/dev/null || true)"
+        max_size="$bsp_max"
+    fi
+    valid_rootfs_size "$default_size" || die "could not determine a valid rootfs size for profile $BOARD; set --rootfs-size or JETSON_ROOTFS_SIZE"
+
+    if [[ -z "$ROOTFS_SIZE_REQUESTED" ]]; then
+        [[ "$FORCE_ROOTFS_SIZE" == false ]] || die '--force-rootfs-size requires an explicit --rootfs-size value'
+        ROOTFS_SIZE_RESOLVED="$default_size"
+        ROOTFS_SIZE_SOURCE="profile default"
+    elif [[ "${ROOTFS_SIZE_REQUESTED,,}" == max ]]; then
+        [[ "$FORCE_ROOTFS_SIZE" == false ]] || die '--force-rootfs-size cannot be combined with --rootfs-size max; provide an explicit size'
+        valid_rootfs_size "$max_size" || die "maximum rootfs size is unknown for profile $BOARD; use an explicit size with --force-rootfs-size"
+        ROOTFS_SIZE_RESOLVED="$max_size"
+        ROOTFS_SIZE_SOURCE="BSP maximum"
+    else
+        valid_rootfs_size "$ROOTFS_SIZE_REQUESTED" || die "invalid rootfs size '$ROOTFS_SIZE_REQUESTED'; use bytes, KiB, MiB, or GiB"
+        ROOTFS_SIZE_RESOLVED="$ROOTFS_SIZE_REQUESTED"
+        ROOTFS_SIZE_SOURCE="user selection"
+    fi
+    local requested_bytes max_bytes
+    requested_bytes="$(rootfs_size_bytes "$ROOTFS_SIZE_RESOLVED")" || die "could not parse rootfs size '$ROOTFS_SIZE_RESOLVED'"
+    if valid_rootfs_size "$max_size"; then
+        max_bytes="$(rootfs_size_bytes "$max_size")" || die "could not parse BSP maximum rootfs size '$max_size'"
+        if ((requested_bytes > max_bytes)); then
+            [[ "$FORCE_ROOTFS_SIZE" == true ]] || die "requested rootfs size $ROOTFS_SIZE_RESOLVED exceeds the detected BSP maximum $max_size for profile $BOARD; use --force-rootfs-size to override"
+            printf 'Rootfs size limit override: %s (requested maximum: %s).\n' "$ROOTFS_SIZE_RESOLVED" "$max_size"
+        fi
+    elif [[ -n "$ROOTFS_SIZE_REQUESTED" ]]; then
+        [[ "$FORCE_ROOTFS_SIZE" == true ]] || die "maximum rootfs size is unknown for profile $BOARD; use --force-rootfs-size with an explicit size to proceed"
+        printf 'Rootfs size limit override: %s (maximum unknown).\n' "$ROOTFS_SIZE_RESOLVED"
+    fi
+    ROOTFS_SIZE_FOR_FLASH=true
+
+    if [[ "$MODE" == dtb ]]; then
+        printf 'Rootfs partition size: %s (%s; not written in DTB-only mode).\n' \
+            "$ROOTFS_SIZE_RESOLVED" "$ROOTFS_SIZE_SOURCE"
+        ROOTFS_SIZE_FOR_FLASH=false
+    else
+        printf 'Rootfs partition size: %s (%s).\n' "$ROOTFS_SIZE_RESOLVED" "$ROOTFS_SIZE_SOURCE"
+    fi
+}
 
 while (($#)); do
     case "$1" in
@@ -59,6 +176,8 @@ while (($#)); do
         --l4t-dir) (($# >= 2)) || die "$1 requires a value"; L4T_DIR="$2"; shift 2 ;;
         --deploy-dir) (($# >= 2)) || die "$1 requires a value"; DEPLOY_BASE_DIR="$2"; shift 2 ;;
         --rootdev) (($# >= 2)) || die "$1 requires a value"; ROOTDEV="$2"; shift 2 ;;
+        --rootfs-size) (($# >= 2)) || die "$1 requires a value"; ROOTFS_SIZE_REQUESTED="$2"; shift 2 ;;
+        --force-rootfs-size) (($# >= 2)) || die "$1 requires a value"; ROOTFS_SIZE_REQUESTED="$2"; FORCE_ROOTFS_SIZE=true; shift 2 ;;
         --yes|-y) ASSUME_YES=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -265,14 +384,22 @@ case "$MODE" in
 esac
 [[ "$ROOTDEV" =~ ^[A-Za-z0-9_.+-]+$ ]] || die "invalid root device: $ROOTDEV"
 
+resolve_rootfs_size
+
 FLASH_COMMANDS=()
 case "$MODE" in
-    full) FLASH_COMMANDS+=("./flash.sh $BOARD $ROOTDEV") ;;
+    full)
+        if [[ "$ROOTFS_SIZE_FOR_FLASH" == true ]]; then
+            FLASH_COMMANDS+=("env IDS_ROOTFS_SIZE=$ROOTFS_SIZE_RESOLVED ./flash.sh -S $ROOTFS_SIZE_RESOLVED $BOARD $ROOTDEV")
+        else
+            FLASH_COMMANDS+=("./flash.sh $BOARD $ROOTDEV")
+        fi
+        ;;
     dtb)
         FLASH_COMMANDS+=("./flash.sh -k A_kernel-dtb $BOARD $ROOTDEV")
         FLASH_COMMANDS+=("./flash.sh -k B_kernel-dtb $BOARD $ROOTDEV")
         ;;
-    rootfs) FLASH_COMMANDS+=("./flash.sh -k APP $BOARD $ROOTDEV") ;;
+    rootfs) FLASH_COMMANDS+=("env IDS_ROOTFS_SIZE=$ROOTFS_SIZE_RESOLVED ./flash.sh -S $ROOTFS_SIZE_RESOLVED -k APP $BOARD $ROOTDEV") ;;
 esac
 
 if [[ "$DRY_RUN" == true ]]; then

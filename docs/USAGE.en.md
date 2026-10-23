@@ -133,6 +133,7 @@ The scripts also show these settings in their `--help` output:
 | `JETSON_FORCE_CUSTOM_REPOSITORIES` | `setup_jetson.sh` | `1` permits configured custom APT profiles after repository validation fails. |
 | `JETSON_QEMU_NAMESERVERS` | `setup_jetson.sh` | Space-separated fallback DNS servers for rootfs `/etc/resolv.conf`. |
 | `JETSON_USB_SYSFS_ROOT` | `b_conf/flash_jetson.sh` | USB sysfs directory used to detect a board in Recovery; defaults to `/sys/bus/usb/devices`. |
+| `JETSON_ROOTFS_SIZE` | `b_conf/flash_jetson.sh` | Optional APP/rootfs partition size (for example `8GiB`) or `max`; values above a known BSP maximum are rejected unless `--force-rootfs-size` is supplied. |
 | `CROSS_COMPILE_AARCH64_PATH`, `TMPDIR` | `b_conf/suppress_uefi_auth_warnings.sh` | Required NVIDIA AArch64 Buildroot toolchain directory and temporary workspace parent (defaults to `/tmp`). |
 
 `cleanup.sh` and `b_conf/select_config.sh` do not use environment variables. `b_conf/flash_jetson.sh` detects JetPack from the deployed rootfs `/etc/jetson-image-info`; for older images it can match the BSP's L4T release to the pair in `JETSON_ARCHIVE_DIR`, then falls back to version-named paths. It prints the detected version and its source. If none is available, only `common/` profiles are listed; set `JETPACK_VERSION` or pass `--jetpack-version` to override detection.
@@ -200,7 +201,13 @@ Available modes:
 | `dtb` | Writes `A_kernel-dtb` and then `B_kernel-dtb`. |
 | `rootfs` | Writes only the `APP` partition. |
 
-The default root device is `mmcblk0p1`. Specify another device with `--rootdev DEVICE` if the target configuration requires it. `JETSON_DEPLOY_DIR` selects `PATH/Linux_for_Tegra`; `JETSON_L4T_DIR` selects the exact BSP path and takes precedence. The flasher reads JetPack from the deployed image metadata, so the deployment directory may have any name. Examples:
+The default root device is `mmcblk0p1`. Specify another device with `--rootdev DEVICE` if the target configuration requires it. The utility prints the rootfs partition size before flashing. By default it uses the selected BSP/profile setting, which may intentionally be a smaller debug size; it does not treat that default as the maximum. Override it with `--rootfs-size 16GiB` or `JETSON_ROOTFS_SIZE=16GiB`. Use `--rootfs-size max` or `JETSON_ROOTFS_SIZE=max` to select a known limit from the BSP's shared board configuration or a profile `ROOTFS_SIZE` metadata file. If a profile can target modules with different capacities and its maximum cannot be determined, use `--force-rootfs-size 16GiB`; this also overrides a known limit and prints a warning. Without that option, explicit sizes above a known limit or with an unknown limit are rejected before profile installation or flashing. Full and rootfs modes pass the chosen size to `flash.sh` as `-S` and `IDS_ROOTFS_SIZE`; DTB-only mode reports the configured size but does not write rootfs. `JETSON_DEPLOY_DIR` selects `PATH/Linux_for_Tegra`; `JETSON_L4T_DIR` selects the exact BSP path and takes precedence. The flasher reads JetPack from the deployed image metadata, so the deployment directory may have any name. Examples:
+
+```bash
+./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode full --rootfs-size 16GiB
+JETSON_ROOTFS_SIZE=max ./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode full
+./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode full --force-rootfs-size 16GiB
+```
 
 ```bash
 ./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode full --jetpack-version 6.2.3

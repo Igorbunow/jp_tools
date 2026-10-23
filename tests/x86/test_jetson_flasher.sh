@@ -9,10 +9,19 @@ assert_contains() { [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2
 fixture="$(mktemp -d /tmp/jetson-flasher.XXXXXX)"
 trap 'rm -rf -- "$fixture"' EXIT
 mkdir -p "$fixture/b_conf/common/demo/Linux_for_Tegra" "$fixture/Linux_for_Tegra" "$fixture/bin" "$fixture/sysfs/1-1"
+printf 'ROOTFSSIZE=55GiB\n' > "$fixture/Linux_for_Tegra/p3701.conf.common"
+mkdir -p "$fixture/b_conf/common/multi-module/Linux_for_Tegra"
+cat > "$fixture/b_conf/common/multi-module/Linux_for_Tegra/multi-module.conf" <<'EOF'
+# Supports multiple module SKUs; this small value is for debug images only.
+ROOTFSSIZE=8GiB
+EOF
 cp "$REPO_DIR/b_conf/select_config.sh" "$fixture/b_conf/"
 cp "$REPO_DIR/b_conf/flash_jetson.sh" "$fixture/b_conf/"
 printf 'demo config\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/demo.conf"
 printf 'payload\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/profile.dat"
+cat > "$fixture/b_conf/common/demo/ROOTFS_SIZE" <<'EOF'
+DEFAULT=8GiB
+EOF
 cat > "$fixture/Linux_for_Tegra/flash.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -38,30 +47,72 @@ printf '7023\n' > "$fixture/sysfs/1-1/idProduct"
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --help)"
 assert_contains "$out" 'JETSON_ARCHIVE_DIR'
 assert_contains "$out" 'JETSON_DEPLOY_DIR'
+assert_contains "$out" 'JETSON_ROOTFS_SIZE'
+assert_contains "$out" '--force-rootfs-size'
 
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 6.2.3)"
 assert_contains "$out" 'demo'
 
 : > "$JETSON_TEST_LOG"
-bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes
-assert_contains "$(cat "$JETSON_TEST_LOG")" './flash.sh demo mmcblk0p1'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes)"
+assert_contains "$out" 'Rootfs partition size: 8GiB'
+assert_contains "$(cat "$JETSON_TEST_LOG")" 'IDS_ROOTFS_SIZE=8GiB ./flash.sh -S 8GiB demo mmcblk0p1'
 [[ -f "$fixture/Linux_for_Tegra/profile.dat" ]] || fail "selected payload was not installed"
+
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --rootfs-size max)"
+assert_contains "$out" 'Rootfs partition size: 55GiB'
+assert_contains "$out" 'IDS_ROOTFS_SIZE=55GiB ./flash.sh -S 55GiB demo mmcblk0p1'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --rootfs-size 56320MiB)"
+assert_contains "$out" 'Rootfs partition size: 56320MiB'
+if bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --rootfs-size 56GiB > "$fixture/oversize.out" 2>&1; then
+    fail 'rootfs size greater than the BSP maximum was accepted'
+fi
+assert_contains "$(cat "$fixture/oversize.out")" 'exceeds the detected BSP maximum 55GiB'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --force-rootfs-size 56GiB)"
+assert_contains "$out" 'Rootfs size limit override: 56GiB (requested maximum: 55GiB)'
+assert_contains "$out" 'IDS_ROOTFS_SIZE=56GiB ./flash.sh -S 56GiB demo mmcblk0p1'
+out="$(JETSON_ROOTFS_SIZE=12GiB bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run)"
+assert_contains "$out" 'Rootfs partition size: 12GiB'
+assert_contains "$out" 'IDS_ROOTFS_SIZE=12GiB ./flash.sh -S 12GiB demo mmcblk0p1'
+out="$(JETSON_ROOTFS_SIZE=12GiB bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --rootfs-size 16GiB)"
+assert_contains "$out" 'Rootfs partition size: 16GiB'
+assert_contains "$out" 'IDS_ROOTFS_SIZE=16GiB ./flash.sh -S 16GiB demo mmcblk0p1'
 
 mkdir -p "$fixture/alternate-bsp"
 cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/alternate-bsp/flash.sh"
+cp "$fixture/Linux_for_Tegra/p3701.conf.common" "$fixture/alternate-bsp/p3701.conf.common"
 : > "$JETSON_TEST_LOG"
 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/alternate-bsp"
 [[ -f "$fixture/alternate-bsp/profile.dat" ]] || fail "--l4t-dir deployment target was ignored"
 
+mkdir -p "$fixture/uncertain-bsp"
+cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/uncertain-bsp/flash.sh"
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board multi-module --mode full --jetpack-version 6.2.3 --dry-run --l4t-dir "$fixture/uncertain-bsp")"
+assert_contains "$out" 'Rootfs partition size: 8GiB (profile default)'
+if bash "$fixture/b_conf/flash_jetson.sh" --board multi-module --mode full --jetpack-version 6.2.3 --dry-run --l4t-dir "$fixture/uncertain-bsp" --rootfs-size max > "$fixture/unknown-max.out" 2>&1; then
+    fail 'profile debug size was incorrectly treated as its maximum'
+fi
+assert_contains "$(cat "$fixture/unknown-max.out")" 'maximum rootfs size is unknown'
+if bash "$fixture/b_conf/flash_jetson.sh" --board multi-module --mode full --jetpack-version 6.2.3 --dry-run --l4t-dir "$fixture/uncertain-bsp" --rootfs-size 16GiB > "$fixture/unknown-max.out" 2>&1; then
+    fail 'explicit size was accepted despite unknown max without force'
+fi
+assert_contains "$(cat "$fixture/unknown-max.out")" 'maximum rootfs size is unknown'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --l4t-dir "$fixture/uncertain-bsp" --force-rootfs-size 16GiB)"
+assert_contains "$out" 'Rootfs size limit override: 16GiB (maximum unknown)'
+if bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run --l4t-dir "$fixture/uncertain-bsp" --force-rootfs-size >/dev/null 2>&1; then
+    fail '--force-rootfs-size was accepted without a size'
+fi
+
 : > "$JETSON_TEST_LOG"
 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode rootfs --rootdev mmcblk1p1 --jetpack-version 6.2.3 --yes
-assert_contains "$(cat "$JETSON_TEST_LOG")" './flash.sh -k APP demo mmcblk1p1'
+assert_contains "$(cat "$JETSON_TEST_LOG")" 'IDS_ROOTFS_SIZE=8GiB ./flash.sh -S 8GiB -k APP demo mmcblk1p1'
 
 : > "$JETSON_TEST_LOG"
 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode dtb --jetpack-version 6.2.3 --yes
 log="$(cat "$JETSON_TEST_LOG")"
 assert_contains "$log" './flash.sh -k A_kernel-dtb demo mmcblk0p1'
 assert_contains "$log" './flash.sh -k B_kernel-dtb demo mmcblk0p1'
+if [[ "$log" == *' -S '* ]]; then fail 'DTB-only mode unexpectedly passed a rootfs size'; fi
 
 : > "$JETSON_TEST_LOG"
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode dtb --jetpack-version 6.2.3 --dry-run)"
@@ -72,6 +123,7 @@ out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack
 assert_contains "$out" "$fixture/alternate-bsp"
 mkdir -p "$fixture/deploy-env/Linux_for_Tegra"
 cp "$fixture/alternate-bsp/flash.sh" "$fixture/deploy-env/Linux_for_Tegra/flash.sh"
+cp "$fixture/Linux_for_Tegra/p3701.conf.common" "$fixture/deploy-env/Linux_for_Tegra/p3701.conf.common"
 out="$(JETSON_DEPLOY_DIR="$fixture/deploy-env" bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --dry-run)"
 assert_contains "$out" "$fixture/deploy-env/Linux_for_Tegra"
 
@@ -84,6 +136,7 @@ assert_contains "$out" 'common/demo'
 mkdir -p "$fixture/b_conf/6.2.3/versioned/Linux_for_Tegra" "$fixture/versioned-deploy/6.2.3/Linux_for_Tegra"
 printf 'versioned config\n' > "$fixture/b_conf/6.2.3/versioned/Linux_for_Tegra/versioned.conf"
 cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/versioned-deploy/6.2.3/Linux_for_Tegra/flash.sh"
+cp "$fixture/Linux_for_Tegra/p3701.conf.common" "$fixture/versioned-deploy/6.2.3/Linux_for_Tegra/p3701.conf.common"
 out="$(JETSON_DEPLOY_DIR="$fixture/versioned-deploy/6.2.3" bash "$fixture/b_conf/flash_jetson.sh" --list)"
 assert_contains "$out" 'Profiles compatible with JetPack 6.2.3:'
 assert_contains "$out" 'versioned'
@@ -96,6 +149,7 @@ mkdir -p "$fixture/b_conf/6.2.x/family-versioned/Linux_for_Tegra" \
     "$fixture/archive/6.2.3"
 printf 'family config\n' > "$fixture/b_conf/6.2.x/family-versioned/Linux_for_Tegra/family-versioned.conf"
 cp "$fixture/Linux_for_Tegra/flash.sh" "$fixture/deployed-arbitrary/Linux_for_Tegra/flash.sh"
+cp "$fixture/Linux_for_Tegra/p3701.conf.common" "$fixture/deployed-arbitrary/Linux_for_Tegra/p3701.conf.common"
 cat > "$fixture/deployed-arbitrary/Linux_for_Tegra/rootfs/etc/jetson-image-info" <<'EOF'
 JetPack: 6.2.3
 L4T: R36.5.2
