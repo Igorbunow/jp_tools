@@ -22,10 +22,11 @@ source file mode. Symlink destinations are rejected. `patches/` accepts
 `*.patch` files in `patch -p1` format; patches already applied are skipped.
 
 Use this mechanism only for target-rootfs contents. Repository normalization
-for NVIDIA's literal `<SOC>` placeholder is a built-in idempotent fix because
-the SoC identifier comes from the selected BSP board configuration (or
-`/etc/nv_boot_control.conf` when already present). It maps documented NVIDIA
-chip IDs to their `t210`, `t186`, `t194`, and `t234` repository components.
+for NVIDIA's literal `<SOC>` placeholder is a built-in idempotent fix. It uses
+only the explicitly selected BSP board configuration. It never guesses from
+the rootfs contents or the set of available profiles.
+The fix maps documented NVIDIA chip IDs to their `t210`, `t186`, `t194`, and
+`t234` repository components.
 
 No release-specific overlay is currently needed for the inspected JetPack
 5.1.7, 6.2, 6.2.2, or 6.2.3 rootfs trees. Add a layer only when a reproducible

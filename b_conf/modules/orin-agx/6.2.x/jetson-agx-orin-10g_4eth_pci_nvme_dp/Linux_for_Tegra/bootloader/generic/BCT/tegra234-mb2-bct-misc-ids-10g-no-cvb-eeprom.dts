@@ -1,0 +1,4 @@
+/dts-v1/;
+
+#include "tegra234-mb2-bct-misc-p3701-0000.dts"
+#include "tegra234-mb2-bct-ids-cvb-eeprom-override.dtsi"

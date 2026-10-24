@@ -11,6 +11,12 @@ mkdir -p "$rootfs/etc/apt/sources.list.d" "$rootfs/etc"
 printf 'ID=ubuntu\nVERSION_ID="22.04"\nVERSION_CODENAME=jammy\nPRETTY_NAME="Ubuntu 22.04.5 LTS"\n' > "$rootfs/etc/os-release"
 printf 'deb https://repo.download.nvidia.com/jetson/<SOC> r36.5 main\n' > "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
 printf 'TEGRA_CHIPID 0x23\n' > "$rootfs/etc/nv_boot_control.conf"
+if rootfs_fix_normalize_nvidia_soc "$rootfs" "$fixture/absent-board.conf"; then
+    printf 'FAIL: rootfs CHIPID was used without an explicitly selected board profile\n' >&2
+    exit 1
+fi
+grep -Fq '<SOC>' "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
+printf 'CHIPID=0x23\n' > "$fixture/board.conf"
 rootfs_fix_normalize_nvidia_soc "$rootfs" "$fixture/board.conf"
 grep -Fq 'jetson/t234 r36.5 main' "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
 rootfs_fix_normalize_nvidia_soc "$rootfs" "$fixture/board.conf"
@@ -22,6 +28,11 @@ printf 'deb https://repo.download.nvidia.com/jetson/<SOC> r35.6 main\n' > "$root
 rm -f "$rootfs/etc/nv_boot_control.conf"
 rootfs_fix_normalize_nvidia_soc "$rootfs" "$fixture/board.conf"
 grep -Fq 'jetson/t234 r35.6 main' "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
+printf 'TEGRA_CHIPID 0x21\n' > "$rootfs/etc/nv_boot_control.conf"
+printf 'deb https://repo.download.nvidia.com/jetson/<SOC> r35.6 main\n' > "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
+rootfs_fix_normalize_nvidia_soc "$rootfs" "$fixture/board.conf"
+grep -Fq 'jetson/t234 r35.6 main' "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
+rm -f "$rootfs/etc/nv_boot_control.conf"
 
 mkdir -p "$fixture/bsp"
 cat > "$fixture/bsp/jetson-agx-orin-devkit-noeeprom.conf" <<'EOF'
@@ -34,6 +45,17 @@ printf 'CHIPID=0x23\n' > "$fixture/bsp/p3701.conf.common"
 printf 'deb https://repo.download.nvidia.com/jetson/<SOC> r36.4 main\n' > "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
 rootfs_fix_normalize_nvidia_soc "$rootfs" "$fixture/bsp/jetson-agx-orin-devkit-noeeprom.conf"
 grep -Fq 'jetson/t234 r36.4 main' "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
+
+# Equal CHIPIDs across stock profiles still do not constitute a user selection.
+mkdir -p "$fixture/stock-bsp"
+printf 'CHIPID=0x21\n' > "$fixture/stock-bsp/jetson-nano-devkit.conf"
+ln -s jetson-nano-devkit.conf "$fixture/stock-bsp/jetson-tx1-devkit.conf"
+printf 'deb https://repo.download.nvidia.com/jetson/<SOC> r32.7 main\n' > "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
+if rootfs_fix_normalize_nvidia_soc "$rootfs" "$fixture/absent-board.conf" "$fixture/stock-bsp"; then
+    printf 'FAIL: NVIDIA <SOC> was replaced without an explicit profile selection\n' >&2
+    exit 1
+fi
+grep -Fq '<SOC>' "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"
 
 # Releases whose installed sources already lack the placeholder remain untouched.
 printf 'deb https://repo.download.nvidia.com/jetson/common r36.5 main\n' > "$rootfs/etc/apt/sources.list.d/nvidia-l4t-apt-source.list"

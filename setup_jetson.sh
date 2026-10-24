@@ -24,6 +24,8 @@ source "$PROJECT_DIR/lib/qemu_session.sh"
 source "$PROJECT_DIR/lib/l4t_mount_cleanup.sh"
 # shellcheck source=lib/progress.sh
 source "$PROJECT_DIR/lib/progress.sh"
+# shellcheck source=lib/terminal_status.sh
+source "$PROJECT_DIR/lib/terminal_status.sh"
 
 # Default settings
 JETSON_USER="${JETSON_USER:-nvidia}"
@@ -34,7 +36,10 @@ FORCE_DELETE=false
 SKIP_QEMU=false
 SKIP_DEBIAN_PATCHES=false
 ROOT_UART_AUTOLOGIN=true
+BOARD_WAS_EXPLICIT=false
+if [[ -n "${JETSON_BOARD:-}" ]]; then BOARD_WAS_EXPLICIT=true; fi
 JETSON_BOARD="${JETSON_BOARD:-jetson-agx-orin-devkit-noeeprom}"
+JETSON_MODULE="${JETSON_MODULE:-}"
 L4T_VERSION="${L4T_VERSION:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-}"
 PRINT_PATHS=false
@@ -42,6 +47,12 @@ APT_UPGRADE_BATCH=false
 FORCE_QEMU_CLEANUP=false
 FORCE_CUSTOM_REPOSITORIES=false
 ROOTFS_CLEANUP_ENABLED=true
+REQUIRE_BOARD_PROFILE=false
+NVIDIA_PROFILE_SELECTION="${JETSON_NVIDIA_PROFILE:-}"
+BOARD_PROFILE_DIR=""
+BOARD_PROFILE_ERROR=""
+BOARD_PROFILE_AVAILABLE=false
+BOARD_CONFIG_AVAILABLE=false
 APT_PACKAGES_FILE="${JETSON_APT_PACKAGES_FILE:-$PROJECT_DIR/qemu-packages.txt}"
 
 case "${JETSON_SKIP_DEBIAN_PATCHES:-0}" in
@@ -64,10 +75,16 @@ case "${JETSON_SKIP_ROOTFS_CLEANUP:-0}" in
     0) ;;
     *) echo "JETSON_SKIP_ROOTFS_CLEANUP must be 0 or 1" >&2; exit 2 ;;
 esac
+case "${JETSON_REQUIRE_BOARD_PROFILE:-0}" in
+    1) REQUIRE_BOARD_PROFILE=true ;;
+    0) ;;
+    *) echo "JETSON_REQUIRE_BOARD_PROFILE must be 0 or 1" >&2; exit 2 ;;
+esac
 
-# Release archives are selected as a matching pair, so R36.4.x (JetPack 6.2.2)
-# and R36.5.x (JetPack 6.2.3) deployments both work from this directory.
+# Release archives are selected as a matching pair. L4T R32.7.6 also supports
+# NVIDIA's separate Xavier and Jetson-210 BSP archive names.
 L4T_RELEASE_FILE=""
+L4T_VERSION_SELECTED=""
 ROOTFS_FILE=""
 SOURCES_FILE="public_sources.tbz2"
 LOCAL_ROOTFS_OVERLAY_NAME="root_fs"
@@ -76,6 +93,7 @@ LOCAL_BOARD_CONFIG_NAME="b_conf"
 # Helper for colored output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 usage() {
@@ -103,13 +121,19 @@ usage() {
     echo "  --skip-debian-patches  Do not run setup_debian.sh"
     echo "  --version <version>    L4T version (default: latest complete archive pair)"
     echo "  --board <name>         flash.sh profile (default: jetson-agx-orin-devkit-noeeprom)"
-    echo "  --jetpack-version <v>  b_conf selection version (default: archive directory name)"
+    echo "  --nvidia-profile <name|number>  Select a stock NVIDIA profile when no b_conf profile matches"
+    echo "  --module <name>        Module family for profile selection (or JETSON_MODULE)"
+    echo "  --require-board-profile  Fail before deployment if no compatible b_conf profile exists"
+    echo "  --jetpack-version <v>  b_conf version (default: archive directory or parent name)"
     echo "  --no-root-uart-login   Disable root UART autologin (default: enabled)"
     echo "  -h, --help             Show this help"
     echo "Environment variables:"
     echo "  JETSON_ARCHIVE_DIR, JETSON_DEPLOY_DIR  Archive and deployment base paths."
     echo "  JETPACK_VERSION, L4T_VERSION          Select b_conf and matching L4T archives."
     echo "  JETSON_BOARD, JETSON_USER, JETSON_PASS, JETSON_HOST  Board/default-user settings."
+    echo "  JETSON_MODULE                         Module family for b_conf selection."
+    echo "  JETSON_NVIDIA_PROFILE                 Stock NVIDIA profile name or 1-based list number."
+    echo "  JETSON_REQUIRE_BOARD_PROFILE=0|1     Require a compatible b_conf profile (default: 0)."
     echo "  JETSON_SKIP_DEBIAN_PATCHES=0|1        Apply Debian patches (default) or skip them."
     echo "  JETSON_APT_UPGRADE=0|1                 Enable batch rootfs apt update/upgrade."
     echo "  JETSON_APT_PACKAGES_FILE               Package list for rootfs APT operations."
@@ -140,7 +164,10 @@ while [[ $# -gt 0 ]]; do
         --skip-debian-patches) SKIP_DEBIAN_PATCHES=true; shift ;;
         --no-root-uart-login) ROOT_UART_AUTOLOGIN=false; shift ;;
         --version) L4T_VERSION="$2"; shift 2 ;;
-        --board) JETSON_BOARD="$2"; shift 2 ;;
+        --board) JETSON_BOARD="$2"; BOARD_WAS_EXPLICIT=true; shift 2 ;;
+        --nvidia-profile) NVIDIA_PROFILE_SELECTION="${2:?--nvidia-profile requires a name or number}"; shift 2 ;;
+        --module) JETSON_MODULE="$2"; shift 2 ;;
+        --require-board-profile) REQUIRE_BOARD_PROFILE=true; shift ;;
         --jetpack-version) JETPACK_VERSION="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) usage ;;
@@ -165,8 +192,15 @@ QEMU_SESSION_LOCK_FILE="$DEPLOY_BASE_DIR/.jetson-qemu-session.lock"
 QEMU_SESSION_HELD=false
 QEMU_ROOTFS_ACTIVE=""
 LOCAL_ROOTFS_OVERLAY="$PROJECT_DIR/$LOCAL_ROOTFS_OVERLAY_NAME"
-JETPACK_VERSION="${JETPACK_VERSION:-$(basename -- "$ARCHIVE_DIR")}"
-JETPACK_VERSION="${JETPACK_VERSION% }"
+if [[ -z "$JETPACK_VERSION" ]]; then
+    archive_version_dir="$(basename -- "$ARCHIVE_DIR")"
+    if [[ "$archive_version_dir" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        JETPACK_VERSION="$archive_version_dir"
+    else
+        parent_version_dir="$(basename -- "$(dirname -- "$ARCHIVE_DIR")")"
+        JETPACK_VERSION="$parent_version_dir"
+    fi
+fi
 
 if [[ "$PRINT_PATHS" == true ]]; then
     printf 'Project resources: %s\n' "$PROJECT_DIR"
@@ -174,6 +208,13 @@ if [[ "$PRINT_PATHS" == true ]]; then
     printf 'Deployment base directory: %s\n' "$DEPLOY_BASE_DIR"
     printf 'L4T directory: %s\n' "$TARGET_DIR"
     printf 'JetPack version: %s\n' "$JETPACK_VERSION"
+    printf 'Module family: %s\n' "${JETSON_MODULE:-auto}"
+    printf 'NVIDIA stock profile selection: %s\n' "${NVIDIA_PROFILE_SELECTION:-interactive or required in batch mode}"
+    if [[ "$REQUIRE_BOARD_PROFILE" == true ]]; then
+        printf 'Board profile required: enabled\n'
+    else
+        printf 'Board profile required: disabled\n'
+    fi
     if [[ "$SKIP_DEBIAN_PATCHES" == true ]]; then
         printf 'Debian patches: skipped\n'
     else
@@ -248,11 +289,13 @@ TOTAL_STEPS=0
 CURRENT_STEP=0
 
 select_release_pair() {
-    local archive version rootfs
+    local archive version rootfs preferred=""
     local -a versions=()
-    for archive in "$ARCHIVE_DIR"/Jetson_Linux_R[0-9]*_aarch64.tbz2; do
+    for archive in "$ARCHIVE_DIR"/Jetson_Linux_R[0-9]*_aarch64.tbz2 \
+                   "$ARCHIVE_DIR"/Jetson-210_Linux_R[0-9]*_aarch64.tbz2; do
         [[ -f "$archive" ]] || continue
         version="${archive##*/Jetson_Linux_}"
+        [[ "$archive" == *Jetson-210_Linux_* ]] && version="${archive##*/Jetson-210_Linux_}"
         version="${version%_aarch64.tbz2}"
         rootfs="$ARCHIVE_DIR/Tegra_Linux_Sample-Root-Filesystem_${version}_aarch64.tbz2"
         if [[ -f "$rootfs" ]]; then
@@ -264,9 +307,104 @@ select_release_pair() {
         exit 1
     fi
     version="$(printf '%s\n' "${versions[@]}" | sort -Vu | tail -n1)"
-    L4T_RELEASE_FILE="Jetson_Linux_${version}_aarch64.tbz2"
+    if [[ "$JETSON_MODULE" == nano-2gb || "$JETSON_MODULE" == tx1 || "$JETSON_BOARD" == *nano* || "$JETSON_BOARD" == *tx1* ]]; then
+        preferred="Jetson-210_Linux_${version}_aarch64.tbz2"
+    else
+        preferred="Jetson_Linux_${version}_aarch64.tbz2"
+    fi
+    if [[ -f "$ARCHIVE_DIR/$preferred" ]]; then
+        L4T_RELEASE_FILE="$preferred"
+    elif [[ -f "$ARCHIVE_DIR/Jetson_Linux_${version}_aarch64.tbz2" ]]; then
+        L4T_RELEASE_FILE="Jetson_Linux_${version}_aarch64.tbz2"
+    elif [[ -f "$ARCHIVE_DIR/Jetson-210_Linux_${version}_aarch64.tbz2" ]]; then
+        L4T_RELEASE_FILE="Jetson-210_Linux_${version}_aarch64.tbz2"
+    else
+        echo -e "${RED}Error: BSP archive missing for L4T $version in $ARCHIVE_DIR${NC}" >&2
+        exit 1
+    fi
     ROOTFS_FILE="Tegra_Linux_Sample-Root-Filesystem_${version}_aarch64.tbz2"
+    L4T_VERSION_SELECTED="$version"
+    validate_module_for_source_pair "$JETSON_MODULE" "$JETPACK_VERSION" "$L4T_RELEASE_FILE" || exit 1
     echo "Selected L4T source pair: ${version}."
+    printf 'Current JetPack version: %s\n' "$JETPACK_VERSION"
+    if [[ "$JETPACK_VERSION" == 4.6.6 ]]; then
+        case "$L4T_RELEASE_FILE" in
+            Jetson-210_Linux_*) echo 'Selected BSP archive set: Nano2g_TX1.' ;;
+            Jetson_Linux_*) echo 'Selected BSP archive set: Xavier.' ;;
+        esac
+        printf 'Supported modules for JetPack %s in selected BSP: %s\n' "$JETPACK_VERSION" \
+            "$(supported_modules_for_source_pair "$JETPACK_VERSION" "$L4T_RELEASE_FILE")"
+    else
+        printf 'Supported modules for JetPack %s: %s\n' "$JETPACK_VERSION" \
+            "$(supported_modules_for_jetpack "$JETPACK_VERSION")"
+    fi
+}
+
+supported_modules_for_jetpack() {
+    local version="${1:-}" module_root selector_dir profile_dir profile resolved
+    local -a modules=()
+    [[ -n "$version" ]] || { printf 'unknown\n'; return 0; }
+    # shellcheck source=b_conf/select_config.sh
+    source "$PROJECT_DIR/b_conf/select_config.sh"
+    for module_root in "$PROJECT_DIR"/b_conf/modules/*; do
+        [[ -d "$module_root" ]] || continue
+        for selector_dir in "$module_root"/*; do
+            [[ -d "$selector_dir" ]] || continue
+            for profile_dir in "$selector_dir"/*; do
+                [[ -d "$profile_dir" ]] || continue
+                profile="${profile_dir##*/}"
+                resolved="$(b_conf_select_package "$PROJECT_DIR/b_conf" "$profile" "$version" "${module_root##*/}" 2>/dev/null || true)"
+                if [[ "$resolved" == "$profile_dir" ]]; then
+                    modules+=("${module_root##*/}")
+                    break 2
+                fi
+            done
+        done
+    done
+    if ((${#modules[@]})); then
+        local sorted_modules
+        sorted_modules="$(printf '%s\n' "${modules[@]}" | sort -u)"
+        local first=true
+        while IFS= read -r module; do
+            [[ -n "$module" ]] || continue
+            if [[ "$first" == true ]]; then
+                printf '%s' "$module"
+                first=false
+            else
+                printf ', %s' "$module"
+            fi
+        done <<< "$sorted_modules"
+        printf '\n'
+    else
+        printf 'none\n'
+    fi
+}
+
+supported_modules_for_source_pair() {
+    local version="${1:-}" release_file="${2:-}"
+    if [[ "$version" == 4.6.6 ]]; then
+        case "$release_file" in
+            Jetson-210_Linux_R32.7.6_*) printf 'nano, nano-2gb, tx1\n'; return 0 ;;
+            Jetson_Linux_R32.7.6_*) printf 'tx2, xavier-agx, xavier-nx\n'; return 0 ;;
+        esac
+    fi
+    supported_modules_for_jetpack "$version"
+}
+
+validate_module_for_source_pair() {
+    local module="${1:-}" version="${2:-}" release_file="${3:-}"
+    local supported_modules archive_set
+    [[ -n "$module" && "$version" == 4.6.6 ]] || return 0
+    case "$release_file" in
+        Jetson-210_Linux_R32.7.6_*) supported_modules='nano,nano-2gb,tx1'; archive_set='Nano2g_TX1' ;;
+        Jetson_Linux_R32.7.6_*) supported_modules='tx2,xavier-agx,xavier-nx'; archive_set='Xavier' ;;
+        *) return 0 ;;
+    esac
+    case ",$supported_modules," in
+        *",$module,"*) return 0 ;;
+    esac
+    print_error "Module $module is not included in the JetPack 4.6.6 $archive_set archive set. Supported modules in this set: $supported_modules. Select the matching archive directory."
+    return 1
 }
 
 update_step() {
@@ -278,8 +416,109 @@ print_notice() {
     echo -e "${GREEN}$*${NC}"
 }
 
+print_warning() {
+    echo -e "${YELLOW}Warning: $*${NC}" >&2
+}
+
 print_error() {
     echo -e "${RED}$*${NC}" >&2
+}
+
+stock_board_profile_names() {
+    local config
+    STOCK_BOARD_PROFILES=()
+    [[ -d "$TARGET_DIR" ]] || return 0
+    while IFS= read -r -d '' config; do
+        STOCK_BOARD_PROFILES+=("${config##*/}")
+    done < <(find "$TARGET_DIR" -maxdepth 1 \( -type f -o -type l \) -name 'jetson-*.conf' -print0 | sort -z)
+}
+
+stock_profile_module_name() {
+    case "$1" in
+        *orin-nx*) printf 'orin-nx\n' ;;
+        *orin-nano*) printf 'orin-nano\n' ;;
+        *agx-orin*|*orin-devkit*) printf 'orin-agx\n' ;;
+        *xavier-nx*) printf 'xavier-nx\n' ;;
+        *xavier*) printf 'xavier-agx\n' ;;
+        *tx1*) printf 'tx1\n' ;;
+        *tx2*) printf 'tx2\n' ;;
+        *nano-2gb*) printf 'nano-2gb\n' ;;
+        *nano*) printf 'nano\n' ;;
+        *) printf 'unknown:%s\n' "${1#jetson-}" ;;
+    esac
+}
+
+list_stock_board_profiles() {
+    local config first=true name
+    stock_board_profile_names
+    if ((${#STOCK_BOARD_PROFILES[@]} == 0)); then
+        [[ -d "$TARGET_DIR" ]] && printf 'none found in the current BSP tree\n' || printf 'not available until BSP deployment\n'
+        return 0
+    fi
+    for config in "${STOCK_BOARD_PROFILES[@]}"; do
+        name="${config%.conf} (module: $(stock_profile_module_name "${config%.conf}"))"
+        if [[ "$first" == true ]]; then
+            printf '%s' "$name"
+            first=false
+        else
+            printf ', %s' "$name"
+        fi
+    done
+    printf '\n'
+}
+
+select_stock_board_profile() {
+    local requested="${1:-${NVIDIA_PROFILE_SELECTION:-}}" profile_name index=0 selection_number
+    stock_board_profile_names
+    if ((${#STOCK_BOARD_PROFILES[@]} == 0)); then
+        print_error "No NVIDIA stock board profiles are available in $TARGET_DIR."
+        return 1
+    fi
+
+    if [[ -z "$requested" ]]; then
+        if [[ "$SILENT_MODE" == true ]]; then
+            print_error "Select a stock NVIDIA profile in batch mode with --nvidia-profile or JETSON_NVIDIA_PROFILE."
+            return 1
+        fi
+        printf 'Select an NVIDIA board profile:\n' >&2
+        for profile_name in "${STOCK_BOARD_PROFILES[@]}"; do
+            index=$((index + 1))
+            printf '  %d) %s (module: %s)\n' "$index" "${profile_name%.conf}" \
+                "$(stock_profile_module_name "${profile_name%.conf}")" >&2
+        done
+        read -r -p 'Enter profile number or name: ' requested || {
+            print_error 'No NVIDIA stock profile was selected.'
+            return 1
+        }
+    fi
+
+    if [[ "$requested" =~ ^[0-9]+$ ]]; then
+        if ((${#requested} > 9)); then
+            print_error "NVIDIA profile number is out of range: $requested"
+            return 1
+        fi
+        selection_number=$((10#$requested))
+        if ((selection_number < 1 || selection_number > ${#STOCK_BOARD_PROFILES[@]})); then
+            print_error "NVIDIA profile number is out of range: $requested"
+            return 1
+        fi
+        profile_name="${STOCK_BOARD_PROFILES[selection_number-1]}"
+    else
+        requested="${requested%.conf}"
+        for profile_name in "${STOCK_BOARD_PROFILES[@]}"; do
+            [[ "${profile_name%.conf}" == "$requested" ]] && break
+        done
+        [[ "${profile_name%.conf}" == "$requested" ]] || {
+            print_error "NVIDIA profile is not available in this BSP: $requested"
+            return 1
+        }
+    fi
+
+    JETSON_BOARD="${profile_name%.conf}"
+    NVIDIA_PROFILE_SELECTION="$JETSON_BOARD"
+    BOARD_PROFILE_AVAILABLE=false
+    BOARD_CONFIG_AVAILABLE=true
+    print_notice "Selected NVIDIA profile: $JETSON_BOARD (module: $(stock_profile_module_name "$JETSON_BOARD"))."
 }
 
 extract_with_progress() {
@@ -365,23 +604,73 @@ deploy_system() {
     echo -e "\n${GREEN}=== Deployment completed successfully ===${NC}"
 }
 
-copy_board_configuration() {
+preflight_board_profile() {
     local board_dir="$PROJECT_DIR/$LOCAL_BOARD_CONFIG_NAME"
-    local bundle_dir payload
-    [[ -d "$TARGET_DIR" ]] || { echo -e "${RED}Error: L4T is not deployed at $TARGET_DIR${NC}" >&2; return 1; }
-    [[ -f "$board_dir/select_config.sh" ]] || { echo -e "${RED}Error: b_conf selector not found: $board_dir/select_config.sh${NC}" >&2; return 1; }
+    local selection status
+    [[ -f "$board_dir/select_config.sh" ]] || {
+        print_error "b_conf selector not found: $board_dir/select_config.sh"
+        return 2
+    }
     # shellcheck source=/dev/null
     source "$board_dir/select_config.sh"
-    bundle_dir="$(b_conf_select_package "$board_dir" "$JETSON_BOARD" "$JETPACK_VERSION")" || return 1
+    if selection="$(b_conf_select_package "$board_dir" "$JETSON_BOARD" "$JETPACK_VERSION" "$JETSON_MODULE" 2>&1)"; then
+        BOARD_PROFILE_DIR="$selection"
+        BOARD_PROFILE_ERROR=""
+        return 0
+    else
+        status=$?
+    fi
+
+    BOARD_PROFILE_DIR=""
+    BOARD_PROFILE_ERROR="$selection"
+    if ((status == 1)); then
+        if [[ "$REQUIRE_BOARD_PROFILE" == true ]]; then
+            print_error "A compatible b_conf profile is required for $JETSON_BOARD on JetPack $JETPACK_VERSION. $selection"
+            return 1
+        fi
+        if [[ "$SILENT_MODE" == true && -z "$NVIDIA_PROFILE_SELECTION" && "$BOARD_WAS_EXPLICIT" != true ]]; then
+            print_error "Batch mode without a project b_conf profile requires --nvidia-profile or JETSON_NVIDIA_PROFILE."
+            return 1
+        fi
+        print_warning "No compatible project b_conf profile for $JETSON_BOARD on JetPack $JETPACK_VERSION. Continuing preparation; only NVIDIA profiles included in the selected JetPack BSP will be available unless a compatible project profile is added."
+        return 0
+    fi
+
+    print_error "$selection"
+    return "$status"
+}
+
+copy_board_configuration() {
+    local board_dir="$PROJECT_DIR/$LOCAL_BOARD_CONFIG_NAME"
+    local bundle_dir="$BOARD_PROFILE_DIR" payload stock_profiles requested=""
+    [[ -d "$TARGET_DIR" ]] || { echo -e "${RED}Error: L4T is not deployed at $TARGET_DIR${NC}" >&2; return 1; }
+    if [[ -z "$bundle_dir" ]]; then
+        update_step "Checking b_conf profile: $JETSON_BOARD for JetPack $JETPACK_VERSION"
+        BOARD_PROFILE_AVAILABLE=false
+        stock_profiles="$(list_stock_board_profiles)"
+        print_warning "No compatible b_conf profile for $JETSON_BOARD. Available NVIDIA profiles: $stock_profiles"
+        if [[ -n "$NVIDIA_PROFILE_SELECTION" ]]; then
+            requested="$NVIDIA_PROFILE_SELECTION"
+        elif [[ "$BOARD_WAS_EXPLICIT" == true && -f "$TARGET_DIR/$JETSON_BOARD.conf" ]]; then
+            requested="$JETSON_BOARD"
+        fi
+        select_stock_board_profile "$requested" || return 1
+        return 0
+    fi
+
     payload="$bundle_dir/Linux_for_Tegra"
-    [[ -f "$payload/${JETSON_BOARD}.conf" ]] || {
+    [[ -f "$payload/${JETSON_BOARD}.conf" || -f "$TARGET_DIR/${JETSON_BOARD}.conf" ]] || {
         echo -e "${RED}Error: profile ${JETSON_BOARD}.conf is missing from package: $payload${NC}" >&2
         return 1
     }
 
     update_step "Installing b_conf: $JETSON_BOARD for JetPack $JETPACK_VERSION"
-    b_conf_install_payload "$payload" "$TARGET_DIR" || return 1
+    if [[ -d "$payload" ]]; then
+        b_conf_install_payload "$payload" "$TARGET_DIR" || return 1
+    fi
 
+    BOARD_PROFILE_AVAILABLE=true
+    BOARD_CONFIG_AVAILABLE=true
     echo -e "${GREEN}Selected package: $bundle_dir${NC}"
     [[ -f "$bundle_dir/COMPATIBILITY.md" ]] && echo "Compatibility log: $bundle_dir/COMPATIBILITY.md"
 }
@@ -392,7 +681,12 @@ apply_debian_patches() {
         return 1
     }
     update_step "Applying L4T compatibility patches"
-    sudo "$PROJECT_DIR/setup_debian.sh" --board "$JETSON_BOARD" --version "${L4T_VERSION_SELECTED}" --l4t-dir "$TARGET_DIR"
+    if [[ "$BOARD_CONFIG_AVAILABLE" == true ]]; then
+        sudo "$PROJECT_DIR/setup_debian.sh" --board "$JETSON_BOARD" --version "${L4T_VERSION_SELECTED}" --l4t-dir "$TARGET_DIR"
+    else
+        print_warning "Board configuration is unavailable; applying release-wide Debian fixes only."
+        sudo "$PROJECT_DIR/setup_debian.sh" --board "$JETSON_BOARD" --version "${L4T_VERSION_SELECTED}" --l4t-dir "$TARGET_DIR" --generic-only
+    fi
 }
 
 apply_rootfs_release_fixes() {
@@ -409,9 +703,11 @@ apply_rootfs_release_fixes() {
 }
 
 write_rootfs_image_identity() {
+    local board_identity="$JETSON_BOARD"
     update_step "Writing rootfs image identity"
+    [[ "$BOARD_CONFIG_AVAILABLE" == true ]] || board_identity="NVIDIA stock profile (not selected)"
     rootfs_fix_write_identity "$TARGET_DIR/rootfs" "$JETPACK_VERSION" \
-        "$L4T_VERSION_SELECTED" "$JETSON_BOARD"
+        "$L4T_VERSION_SELECTED" "$board_identity"
 }
 
 begin_qemu_session() {
@@ -553,13 +849,14 @@ trap 'qemu_handle_signal HUP 129' HUP
 
 setup_qemu_chroot() {
     local rootfs_path="$TARGET_DIR/rootfs"
+    local prompt_module="${JETSON_MODULE:-$(stock_profile_module_name "$JETSON_BOARD")}"
     local status
     begin_qemu_session "$rootfs_path" || return 1
     prepare_qemu_rootfs "$rootfs_path" || { abort_qemu_session "$rootfs_path" || true; return 1; }
     qemu_session_set_phase "interactive-chroot" || { abort_qemu_session "$rootfs_path" || true; return 1; }
     update_step "Entering QEMU chroot for configuration"
     print_notice "Entering environment with a clean locale..."
-    qemu_chroot_run_shell "$rootfs_path"
+    qemu_chroot_run_shell "$rootfs_path" "$prompt_module"
     status=$?
 
     update_step "Unmounting QEMU rootfs resources"
@@ -633,17 +930,18 @@ setup_jetson_exit_cleanup() {
     if [[ -n "${TARGET_DIR:-}" && -d "$TARGET_DIR/bootloader" ]]; then
         l4t_cleanup_deployment_mounts "$TARGET_DIR" || exit_status=1
     fi
+    terminal_status_finish "$exit_status" || true
     exit "$exit_status"
 }
 
 trap setup_jetson_exit_cleanup EXIT
+terminal_status_start "Jetson setup"
 
 # --- Execution starts here ---
 
-check_dependencies
 select_release_pair
-L4T_VERSION_SELECTED="${L4T_RELEASE_FILE#Jetson_Linux_}"
-L4T_VERSION_SELECTED="${L4T_VERSION_SELECTED%_aarch64.tbz2}"
+preflight_board_profile || exit 1
+check_dependencies
 
 # Check current deployment status.
 DEPLOY_STATUS="not deployed"
@@ -719,8 +1017,12 @@ if [ -d "$TARGET_DIR" ]; then
     if [[ -d "$TARGET_DIR/rootfs" ]]; then
         apply_rootfs_release_fixes || exit 1
     fi
-    echo -e "\n${GREEN}Preparation complete. After powering on the board and confirming Recovery mode, run:${NC}"
-    echo "  cd \"$TARGET_DIR\" && sudo ./flash.sh $JETSON_BOARD mmcblk0p1"
+    if [[ "$BOARD_CONFIG_AVAILABLE" == true ]]; then
+        echo -e "\n${GREEN}Preparation complete. After powering on the board and confirming Recovery mode, run:${NC}"
+        echo "  cd \"$TARGET_DIR\" && sudo ./flash.sh $JETSON_BOARD mmcblk0p1"
+    else
+        print_warning "System preparation completed, but no flashable board configuration was found. Select a compatible profile before flashing."
+    fi
 fi
 
 POST_SETUP_FAILED=false

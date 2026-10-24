@@ -19,6 +19,7 @@ EOF
 cp "$REPO_DIR/b_conf/select_config.sh" "$fixture/b_conf/"
 cp "$REPO_DIR/b_conf/flash_jetson.sh" "$fixture/b_conf/"
 cp "$REPO_DIR/lib/l4t_mount_cleanup.sh" "$fixture/lib/"
+cp "$REPO_DIR/lib/terminal_status.sh" "$fixture/lib/"
 printf 'demo config\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/demo.conf"
 printf 'payload\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/profile.dat"
 cat > "$fixture/b_conf/common/demo/ROOTFS_SIZE" <<'EOF'
@@ -80,6 +81,19 @@ export JETSON_USB_SYSFS_ROOT="$fixture/sysfs"
 printf '0955\n' > "$fixture/sysfs/1-1/idVendor"
 printf '7023\n' > "$fixture/sysfs/1-1/idProduct"
 
+mkdir -p "$fixture/b_conf/modules/xavier-agx/4.6.6/jetson-xavier/Linux_for_Tegra" \
+    "$fixture/b_conf/modules/xavier-nx/4.6.6/jetson-xavier-nx-devkit/Linux_for_Tegra"
+printf 'xavier-agx\n' > "$fixture/b_conf/modules/xavier-agx/4.6.6/jetson-xavier/MODULE"
+printf 'xavier-nx\n' > "$fixture/b_conf/modules/xavier-nx/4.6.6/jetson-xavier-nx-devkit/MODULE"
+printf 'ROOTFSSIZE=8GiB\n' > "$fixture/b_conf/modules/xavier-agx/4.6.6/jetson-xavier/Linux_for_Tegra/jetson-xavier.conf"
+touch "$fixture/b_conf/modules/xavier-nx/4.6.6/jetson-xavier-nx-devkit/Linux_for_Tegra/jetson-xavier-nx-devkit.conf"
+cp "$fixture/b_conf/modules/xavier-agx/4.6.6/jetson-xavier/Linux_for_Tegra/jetson-xavier.conf" \
+    "$fixture/Linux_for_Tegra/jetson-xavier.conf"
+printf 'ROOTFSSIZE=8GiB\n' > "$fixture/Linux_for_Tegra/jetson-xavier-nx-devkit.conf"
+mkdir -p "$fixture/b_conf/modules/xavier-agx/4.6.6/jetson-xavier-stock"
+printf 'xavier-agx\n' > "$fixture/b_conf/modules/xavier-agx/4.6.6/jetson-xavier-stock/MODULE"
+printf 'ROOTFSSIZE=8GiB\n' > "$fixture/Linux_for_Tegra/jetson-xavier-stock.conf"
+
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --help)"
 assert_contains "$out" 'JETSON_ARCHIVE_DIR'
 assert_contains "$out" 'JETSON_DEPLOY_DIR'
@@ -88,6 +102,33 @@ assert_contains "$out" '--force-rootfs-size'
 
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 6.2.3)"
 assert_contains "$out" 'demo'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 4.6.6 --module xavier-agx --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'xavier-agx'
+assert_contains "$out" 'jetson-xavier'
+if [[ "$out" == *'jetson-xavier-nx-devkit'* ]]; then fail 'module filter included a different module'; fi
+out="$(JETSON_MODULE=xavier-agx bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 4.6.6 --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'jetson-xavier'
+if [[ "$out" == *'jetson-xavier-nx-devkit'* ]]; then fail 'JETSON_MODULE did not filter profiles'; fi
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 4.6.6 --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'jetson-xavier'
+assert_contains "$out" 'jetson-xavier-nx-devkit'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board jetson-xavier-stock --module xavier-agx --mode full \
+    --jetpack-version 4.6.6 --dry-run --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" '(stock BSP profile; no overlay files)'
+interactive_out="$(printf '1\n1\ny\n' | script -qefc \
+    "env JETSON_USB_SYSFS_ROOT='$fixture/sysfs' bash '$fixture/b_conf/flash_jetson.sh' --mode full --jetpack-version 4.6.6 --l4t-dir '$fixture/Linux_for_Tegra'" \
+    /dev/null 2>&1)"
+module_prompt_line="$(grep -n 'Compatible module families' <<< "$interactive_out" | head -1 | cut -d: -f1)"
+profile_prompt_line="$(grep -n 'Compatible board profiles' <<< "$interactive_out" | head -1 | cut -d: -f1)"
+[[ -n "$module_prompt_line" && -n "$profile_prompt_line" && "$module_prompt_line" -lt "$profile_prompt_line" ]] || \
+    fail 'interactive flasher did not ask for module before profiles'
+
+mkdir -p "$fixture/sysfs-xavier/1-1"
+printf '0955\n' > "$fixture/sysfs-xavier/1-1/idVendor"
+printf '7019\n' > "$fixture/sysfs-xavier/1-1/idProduct"
+out="$(JETSON_USB_SYSFS_ROOT="$fixture/sysfs-xavier" bash "$fixture/b_conf/flash_jetson.sh" \
+    --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'NVIDIA USB device detected in Recovery mode'
 
 : > "$JETSON_TEST_LOG"
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra")"

@@ -68,7 +68,7 @@ The flashing utility asks for confirmation before writing. `--yes` is available 
 
 Profiles live under `b_conf/`. The selector prefers an exact JetPack version, then a `major.minor.x` family, then `major.x`, then `common`. A package is a complete payload for that profile; packages are not merged. Each profile should include a `COMPATIBILITY.md` journal. See [Adding and maintaining board profiles](docs/USAGE.en.md#adding-a-board-profile) (English) and [Добавление профиля платы](docs/USAGE.ru.md#добавление-профиля-платы) (Russian).
 
-The current `6.2.x` profiles were sourced from JetPack 6.2.3; the family selector does not mean every 6.2 release was tested. Check each profile's compatibility journal before use.
+All board profiles use `b_conf/modules/<module>/<JetPack selector>/<profile>/`; for example, Orin AGX profiles are under `modules/orin-agx/`, and JetPack 4.6.6 stock profiles are under `modules/xavier-agx/`, `modules/xavier-nx/`, `modules/nano-2gb/`, and `modules/tx1/`. Select the module with `--module` or `JETSON_MODULE`. The selector still reads legacy top-level profiles from external configuration trees for backward compatibility. The Orin AGX `6.2.x` profiles were sourced from JetPack 6.2.3; the family selector does not mean every 6.2 release was tested. Check each profile's compatibility journal before use.
 
 ## Security notes
 

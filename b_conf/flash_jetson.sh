@@ -7,10 +7,13 @@ REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 B_CONF_DIR="$SCRIPT_DIR"
 # shellcheck source=lib/l4t_mount_cleanup.sh
 source "$REPO_DIR/lib/l4t_mount_cleanup.sh"
+# shellcheck source=lib/terminal_status.sh
+source "$REPO_DIR/lib/terminal_status.sh"
 L4T_DIR="${JETSON_L4T_DIR:-}"
 DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 ARCHIVE_DIR="${JETSON_ARCHIVE_DIR:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-}"
+JETSON_MODULE="${JETSON_MODULE:-}"
 BOARD=""
 MODE=""
 ROOTDEV="mmcblk0p1"
@@ -30,6 +33,7 @@ Usage: $0 [options]
 Options:
   --list                       List profiles compatible with the selected version (or common profiles if unknown).
   --board PROFILE              Board profile (also accepted: --profile).
+  --module MODULE              Module family (e.g. orin-agx, orin-nx, xavier-agx, nano-2gb, tx1).
   --mode MODE                  full, dtb (write A then B), or rootfs (APP only).
   --jetpack-version VERSION    Override JetPack detection and select matching versioned profiles.
   --l4t-dir PATH               Use this exact Linux_for_Tegra directory.
@@ -47,6 +51,7 @@ Environment variables:
   JETSON_L4T_DIR               Exact Linux_for_Tegra directory (takes precedence).
   JETSON_ROOTFS_SIZE           Rootfs size passed to flash.sh; supports a size or 'max'.
   JETPACK_VERSION              JetPack version used to resolve versioned profiles.
+  JETSON_MODULE                Restrict profiles to a module family; CLI --module takes precedence.
   JETSON_USB_SYSFS_ROOT        USB sysfs root used for Recovery detection (default: /sys/bus/usb/devices).
 
 Without --board or --mode, an interactive terminal prompts for the missing choices.
@@ -56,6 +61,7 @@ Examples:
   $0 --board jetson-agx-orin-10g_4eth_pci_nvme_dp --mode dtb --yes
   $0 --board jetson-agx-orin-devkit-noeeprom --mode rootfs --dry-run
   $0 --board jetson-agx-orin-devkit-noeeprom --mode full --rootfs-size max
+  $0 --module xavier-agx --list --jetpack-version 4.6.6
 EOF
 }
 
@@ -84,6 +90,7 @@ rootfs_size_bytes() {
 
 bsp_profile_rootfs_size() {
     local config="$SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf"
+    [[ -r "$config" ]] || config="$L4T_DIR/$BOARD.conf"
     [[ -r "$config" ]] || return 1
     LDK_DIR="$L4T_DIR" bash --noprofile --norc -c '
         LDK_DIR="$1"
@@ -173,6 +180,7 @@ while (($#)); do
     case "$1" in
         --list) LIST_ONLY=true; shift ;;
         --board|--profile) (($# >= 2)) || die "$1 requires a value"; BOARD="$2"; shift 2 ;;
+        --module) (($# >= 2)) || die "$1 requires a value"; JETSON_MODULE="$2"; shift 2 ;;
         --mode) (($# >= 2)) || die "$1 requires a value"; MODE="$2"; shift 2 ;;
         --jetpack-version) (($# >= 2)) || die "$1 requires a value"; JETPACK_VERSION="$2"; shift 2 ;;
         --l4t-dir) (($# >= 2)) || die "$1 requires a value"; L4T_DIR="$2"; shift 2 ;;
@@ -254,24 +262,44 @@ fi
 source "$B_CONF_DIR/select_config.sh"
 
 compatible_profiles() {
-    local candidate profile bundle
+    local candidate profile bundle module
     local -A seen=()
     while IFS= read -r candidate; do
         profile="${candidate##*/}"
-        [[ -n "$profile" && -z "${seen[$profile]+x}" ]] || continue
+        [[ -n "$profile" ]] || continue
+        module="$(b_conf_profile_module "$candidate" 2>/dev/null || printf 'unspecified')"
+        [[ -z "$JETSON_MODULE" || "$module" == "$JETSON_MODULE" ]] || continue
         if [[ "$VERSION_KNOWN" == true ]]; then
-            bundle="$(b_conf_select_package "$B_CONF_DIR" "$profile" "$JETPACK_VERSION" 2>/dev/null)" || continue
+            if [[ "$candidate" == "$B_CONF_DIR/modules/"* ]]; then
+                bundle="$(b_conf_select_package "$B_CONF_DIR" "$profile" "$JETPACK_VERSION" "$module" 2>/dev/null)" || continue
+            else
+                bundle="$(b_conf_select_package "$B_CONF_DIR" "$profile" "$JETPACK_VERSION" "${JETSON_MODULE:-}" 2>/dev/null)" || continue
+            fi
         else
-            bundle="$B_CONF_DIR/common/$profile"
-            [[ -d "$bundle/Linux_for_Tegra" ]] || continue
+            bundle="$candidate"
+            [[ "$bundle" == "$B_CONF_DIR/common/"* || "$bundle" == "$B_CONF_DIR/modules/"*/common/* ]] || continue
         fi
-        [[ -f "$bundle/Linux_for_Tegra/$profile.conf" ]] || continue
-        seen[$profile]="$bundle"
-    done < <(find "$B_CONF_DIR" -mindepth 2 -maxdepth 2 -type d -print | LC_ALL=C sort)
+        [[ -f "$bundle/Linux_for_Tegra/$profile.conf" || -f "$L4T_DIR/$profile.conf" ]] || continue
+        seen["$module/$profile"]="$bundle"
+    done < <({
+        find "$B_CONF_DIR" -mindepth 3 -type d -name Linux_for_Tegra -print | sed 's#/Linux_for_Tegra$##'
+        find "$B_CONF_DIR" -mindepth 3 -type f -name MODULE -print | sed 's#/MODULE$##'
+    } | LC_ALL=C sort -u)
 
-    for profile in "${!seen[@]}"; do
-        printf '%s\t%s\n' "$profile" "${seen[$profile]}"
+    for candidate in "${!seen[@]}"; do
+        printf '%s\t%s\t%s\n' "${candidate%%/*}" "${candidate#*/}" "${seen[$candidate]}"
     done | LC_ALL=C sort
+}
+
+compatible_modules() {
+    local row module profile bundle
+    local -A seen=()
+    for row in "${PROFILE_ROWS[@]}"; do
+        IFS=$'\t' read -r module profile bundle <<< "$row"
+        [[ "$module" != unspecified ]] || continue
+        seen[$module]=1
+    done
+    printf '%s\n' "${!seen[@]}" | LC_ALL=C sort
 }
 
 mapfile -t PROFILE_ROWS < <(compatible_profiles)
@@ -289,8 +317,8 @@ if [[ "$LIST_ONLY" == true ]]; then
         printf 'Common profiles (JetPack version unknown; set JETPACK_VERSION or --jetpack-version to include versioned profiles):\n'
     fi
     for row in "${PROFILE_ROWS[@]}"; do
-        IFS=$'\t' read -r profile bundle <<< "$row"
-        printf '  %-48s %s\n' "$profile" "${bundle#"$REPO_DIR"/}"
+        IFS=$'\t' read -r module profile bundle <<< "$row"
+        printf '  %-14s %-44s %s\n' "$module" "$profile" "${bundle#"$REPO_DIR"/}"
         [[ -f "$bundle/COMPATIBILITY.md" ]] && printf '    compatibility log: %s\n' "${bundle#"$REPO_DIR"/}/COMPATIBILITY.md"
     done
     exit 0
@@ -309,7 +337,8 @@ recovery_device_present() {
         [[ -r "$product_file" ]] || continue
         IFS= read -r product < "$product_file" || continue
         case "${product,,}" in
-            7023|7223|7323|7423|7523|7623) return 0 ;;
+            # Orin, AGX Xavier, Xavier NX, Nano, and TX1 Force Recovery IDs.
+            7023|7223|7323|7423|7523|7623|7019|7e19|7f21|7721) return 0 ;;
         esac
     done
     return 1
@@ -349,28 +378,63 @@ wait_for_recovery_device() {
 
 select_profile_interactively() {
     local index choice
+    local -a modules=()
+    if [[ -z "$JETSON_MODULE" ]]; then
+        mapfile -t modules < <(compatible_modules)
+        if ((${#modules[@]} > 1)); then
+            printf 'Compatible module families for JetPack %s:\n' "$JETPACK_VERSION" > /dev/tty
+            for index in "${!modules[@]}"; do printf '  %d) %s\n' "$((index + 1))" "${modules[$index]}" > /dev/tty; done
+            printf 'Choose module number: ' > /dev/tty
+            IFS= read -r choice < /dev/tty || die 'could not read module choice'
+            [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#modules[@]})) || die 'invalid module choice'
+            JETSON_MODULE="${modules[$((choice - 1))]}"
+            mapfile -t PROFILE_ROWS < <(compatible_profiles)
+        fi
+    fi
     printf 'Compatible board profiles for JetPack %s:\n' "$JETPACK_VERSION" > /dev/tty
     for index in "${!PROFILE_ROWS[@]}"; do
-        IFS=$'\t' read -r profile bundle <<< "${PROFILE_ROWS[$index]}"
+        IFS=$'\t' read -r module profile bundle <<< "${PROFILE_ROWS[$index]}"
         printf '  %d) %s (%s)\n' "$((index + 1))" "$profile" "${bundle#"$REPO_DIR"/}" > /dev/tty
     done
     printf 'Choose profile number: ' > /dev/tty
     IFS= read -r choice < /dev/tty || die 'could not read profile choice'
     [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#PROFILE_ROWS[@]})) || die 'invalid profile choice'
-    IFS=$'\t' read -r BOARD SELECTED_BUNDLE <<< "${PROFILE_ROWS[$((choice - 1))]}"
+    IFS=$'\t' read -r JETSON_MODULE BOARD SELECTED_BUNDLE <<< "${PROFILE_ROWS[$((choice - 1))]}"
+    [[ "$JETSON_MODULE" != unspecified ]] || JETSON_MODULE=""
 }
 
 if [[ -z "$BOARD" ]]; then
     has_tty || die 'specify --board in batch mode'
     select_profile_interactively
 else
+    if [[ -z "$JETSON_MODULE" ]]; then
+        local_profile_modules=()
+        for row in "${PROFILE_ROWS[@]}"; do
+            IFS=$'\t' read -r row_module row_profile row_bundle <<< "$row"
+            [[ "$row_profile" == "$BOARD" ]] || continue
+            [[ "$row_module" != unspecified ]] || continue
+            local_profile_modules+=("$row_module")
+        done
+        if ((${#local_profile_modules[@]} == 1)); then
+            JETSON_MODULE="${local_profile_modules[0]}"
+            [[ "$JETSON_MODULE" != unspecified ]] || JETSON_MODULE=""
+        elif ((${#local_profile_modules[@]} > 1)); then
+            has_tty || die "profile '$BOARD' exists for multiple modules; specify --module"
+            printf 'Module families for profile %s:\n' "$BOARD" > /dev/tty
+            for index in "${!local_profile_modules[@]}"; do printf '  %d) %s\n' "$((index + 1))" "${local_profile_modules[$index]}" > /dev/tty; done
+            printf 'Choose module number: ' > /dev/tty
+            IFS= read -r choice < /dev/tty || die 'could not read module choice'
+            [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#local_profile_modules[@]})) || die 'invalid module choice'
+            JETSON_MODULE="${local_profile_modules[$((choice - 1))]}"
+        fi
+    fi
     if [[ "$VERSION_KNOWN" == true ]]; then
-        SELECTED_BUNDLE="$(b_conf_select_package "$B_CONF_DIR" "$BOARD" "$JETPACK_VERSION")" || exit 1
+        SELECTED_BUNDLE="$(b_conf_select_package "$B_CONF_DIR" "$BOARD" "$JETPACK_VERSION" "$JETSON_MODULE")" || exit 1
     else
         SELECTED_BUNDLE="$B_CONF_DIR/common/$BOARD"
         [[ -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]] || die "profile '$BOARD' is not common; set JETPACK_VERSION or use --jetpack-version"
     fi
-    [[ -f "$SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf" ]] || die "profile config missing: $SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf"
+    [[ -f "$SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf" || -f "$L4T_DIR/$BOARD.conf" ]] || die "profile config missing: $BOARD.conf"
 fi
 
 if [[ -z "$MODE" ]]; then
@@ -407,8 +471,12 @@ esac
 if [[ "$DRY_RUN" == true ]]; then
     printf 'Dry run: profile=%s, JetPack=%s, mode=%s, rootdev=%s\n' "$BOARD" "$JETPACK_VERSION" "$MODE" "$ROOTDEV"
     printf 'Would install these profile files into %s:\n' "$L4T_DIR"
-    while IFS= read -r -d '' file; do printf '  %s\n' "${file#"$SELECTED_BUNDLE/Linux_for_Tegra"/}"; done \
-        < <(find "$SELECTED_BUNDLE/Linux_for_Tegra" -type f -print0 | LC_ALL=C sort -z)
+    if [[ -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]]; then
+        while IFS= read -r -d '' file; do printf '  %s\n' "${file#"$SELECTED_BUNDLE/Linux_for_Tegra"/}"; done \
+            < <(find "$SELECTED_BUNDLE/Linux_for_Tegra" -type f -print0 | LC_ALL=C sort -z)
+    else
+        printf '  (stock BSP profile; no overlay files)\n'
+    fi
     printf 'Would run:\n'
     for command in "${FLASH_COMMANDS[@]}"; do printf '  sudo %s\n' "$command"; done
     exit 0
@@ -420,9 +488,11 @@ flash_jetson_exit_cleanup() {
     if [[ -d "$L4T_DIR/bootloader" ]]; then
         l4t_cleanup_deployment_mounts "$L4T_DIR" || exit_status=1
     fi
+    terminal_status_finish "$exit_status" || true
     exit "$exit_status"
 }
 trap flash_jetson_exit_cleanup EXIT
+terminal_status_start "Jetson flash"
 
 wait_for_recovery_device
 
@@ -434,7 +504,9 @@ if [[ "$ASSUME_YES" != true ]]; then
 fi
 
 printf 'Installing profile %s from %s\n' "$BOARD" "$SELECTED_BUNDLE"
-b_conf_install_payload "$SELECTED_BUNDLE/Linux_for_Tegra" "$L4T_DIR" || die 'profile payload installation failed'
+if [[ -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]]; then
+    b_conf_install_payload "$SELECTED_BUNDLE/Linux_for_Tegra" "$L4T_DIR" || die 'profile payload installation failed'
+fi
 
 for command in "${FLASH_COMMANDS[@]}"; do
     # Values are constrained above/profile names are selector-validated. Execute

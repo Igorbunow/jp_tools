@@ -2,22 +2,27 @@
 
 [English usage guide](../docs/USAGE.en.md) · [Руководство на русском](../docs/USAGE.ru.md)
 
-Each profile is stored as a package containing:
+Every checked-in board profile is stored under `modules/<module>/` and is a
+package containing:
 
 - `Linux_for_Tegra/`: files copied into the selected BSP.
 - `COMPATIBILITY.md`: the compatibility and test history for that profile.
+- `MODULE`: optional module-family identifier for module-aware profiles.
+- `JETPACK_MIN_VERSION` / `JETPACK_MAX_VERSION`: optional inclusive version
+  bounds when a broad selector such as `common` must exclude unsupported releases.
 
-Place cross-version profiles under `common/<profile>/`. Place a complete
-replacement package under a JetPack version selector when it only supports
-that release family, for example `6.2.x/<profile>/`, `6.x/<profile>/`, or
-`7.2.1/<profile>/`.
+Place cross-version profiles under `modules/<module>/common/<profile>/`.
+Place a complete replacement package under a JetPack version selector when it
+only supports that release family, for example
+`modules/orin-agx/6.2.x/<profile>/`, `modules/xavier-agx/4.6.6/<profile>/`,
+or `modules/orin-nx/7.2.1/<profile>/`.
 
 `setup_jetson.sh` selects one package in this order: exact version, minor
 family, major family, then `common`. Packages are not merged. A versioned
 package must therefore contain every file required by that profile. This
 keeps a newer package from silently inheriting incompatible files.
 
-The `6.2.x` directory currently contains separate complete packages for
+The `modules/orin-agx/6.2.x` directory currently contains separate complete packages for
 `jetson-agx-orin-10g_4eth_pci_nvme_dp` and
 `jetson-agx-orin-gmii_2eth_audio_dp`. They were copied from the 6.2.3
 configuration set and verified against its BSP artifacts. See each package's
@@ -28,10 +33,23 @@ The installer only adds missing files. If a package path collides with an
 existing BSP file that has different content, setup stops and reports the
 collision so the vendor file is preserved.
 
+`setup_jetson.sh` prints the detected JetPack version and the module families
+that have at least one selectable profile. This uses the same selector as
+profile installation and honors optional version bounds and family selectors
+such as `6.2.x`; the list is not a hard-coded table of individual releases.
+
 Version selectors use JetPack versions (`5.1.7`, `6.2.2`), not L4T release
 strings (`R35.6.5`, `R36.4.4`). The default version is inferred from the
 directory containing `setup_jetson.sh`; pass `--jetpack-version` when that
 directory is named differently.
+
+All checked-in profiles, including Orin AGX, use
+`modules/<module>/<version-selector>/<profile>/`. Module directories include
+`orin-agx`, `xavier-agx`, `xavier-nx`, `nano-2gb`, and `tx1`. Each profile has
+a `MODULE` marker and compatibility journal. An absent `Linux_for_Tegra/`
+payload means the profile uses the stock board configuration already present
+in the NVIDIA BSP. The selector still accepts legacy top-level profiles in
+external configuration trees for backward compatibility.
 
 ## Flash utility
 
@@ -41,8 +59,8 @@ profile and operation, installs that profile's payload into `Linux_for_Tegra`,
 then asks for confirmation before writing the device. `--list` prints profiles
 without modifying the BSP.
 
-Before installing a profile, the utility checks for a Jetson Orin Recovery USB
-ID. In interactive mode, if no device is found, choose retry after connecting
+Before installing a profile, the utility checks supported NVIDIA Recovery USB
+IDs for Orin, AGX Xavier, Xavier NX, Nano, and TX1 modules. In interactive mode, if no device is found, choose retry after connecting
 the board in Recovery or quit. Batch runs fail immediately when Recovery is
 absent. `--dry-run` skips device detection.
 
@@ -53,6 +71,8 @@ Batch examples:
 ./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode full --yes
 ./b_conf/flash_jetson.sh --board jetson-agx-orin-10g_4eth_pci_nvme_dp --mode dtb --yes
 ./b_conf/flash_jetson.sh --board jetson-agx-orin-devkit-noeeprom --mode rootfs --dry-run
+./b_conf/flash_jetson.sh --module xavier-agx --list --jetpack-version 4.6.6
+./b_conf/flash_jetson.sh --module nano-2gb --board jetson-nano-2gb-devkit --mode full --yes
 ```
 
 `full` calls `flash.sh`; `dtb` writes `A_kernel-dtb` and then `B_kernel-dtb`;
@@ -63,8 +83,11 @@ The utility detects JetPack from the deployed rootfs `/etc/jetson-image-info`;
 for older images it can match the BSP's L4T release to the archive pair in
 `JETSON_ARCHIVE_DIR`, then check version-named paths. It prints the detected
 version and its source. `JETPACK_VERSION` or `--jetpack-version VERSION`
-overrides detection. If no version can be inferred, only `common/` profiles
-are listed. `JETSON_USB_SYSFS_ROOT` can override
+overrides detection. `--module MODULE` or `JETSON_MODULE` filters by module
+family (`orin-agx`, `orin-nx`, `xavier-agx`, `xavier-nx`, `nano-2gb`, `tx1`,
+etc.). If multiple module families have compatible profiles, interactive
+selection asks for the module before listing boards. If no version can be
+inferred, only common profiles are listed. `JETSON_USB_SYSFS_ROOT` can override
 the USB sysfs path used for Recovery detection (default
 `/sys/bus/usb/devices`). `--dry-run` prints selected files and commands without
 installing or flashing. `--yes` bypasses the interactive USB Recovery and

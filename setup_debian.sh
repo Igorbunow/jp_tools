@@ -9,14 +9,16 @@ cd "$PROJECT_DIR"
 BOARD="jetson-agx-orin-devkit"
 VERSION=""
 L4T_DIR="${JETSON_L4T_DIR:-}"
+GENERIC_ONLY=false
 usage() {
     cat <<EOF
-Usage: $0 [--board PROFILE] [--version L4T_VERSION] [--l4t-dir PATH]
+Usage: $0 [--board PROFILE] [--version L4T_VERSION] [--l4t-dir PATH] [--generic-only]
 
 Options:
   --board PROFILE       Board profile to patch (default: jetson-agx-orin-devkit).
   --version VERSION     L4T release version used by version-specific fixes.
   --l4t-dir PATH        Exact Linux_for_Tegra directory.
+  --generic-only        Apply release-wide fixes without requiring a board profile.
   -h, --help            Show this help.
 
 Environment variables:
@@ -28,6 +30,7 @@ while (($#)); do
         --board) (($# >= 2)) || { echo "--board requires a value" >&2; exit 2; }; BOARD="$2"; shift 2 ;;
         --version) (($# >= 2)) || { echo "--version requires a value" >&2; exit 2; }; VERSION="$2"; shift 2 ;;
         --l4t-dir) (($# >= 2)) || { echo "--l4t-dir requires a value" >&2; exit 2; }; L4T_DIR="$2"; shift 2 ;;
+        --generic-only) GENERIC_ONLY=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -148,7 +151,8 @@ apply_patches() {
     fi
 
     # F: Keep the existing manual recovery-mode handoff workaround.
-    if [[ "$BOARD" == jetson-agx-orin-10g_4eth_pci_nvme_dp ]] && ! grep -q 'DEBIAN WORKAROUND' "$PY_FLASH_INTERNAL"; then
+    if [[ "$BOARD" == jetson-agx-orin-10g_4eth_pci_nvme_dp && "$GENERIC_ONLY" == false ]] && \
+        ! grep -q 'DEBIAN WORKAROUND' "$PY_FLASH_INTERNAL"; then
         grep -Fq "info_print('Boot Rom communication')" "$PY_FLASH_INTERNAL" || fail "cannot locate Boot Rom handoff in tegraflash_internal.py"
         tmp="$(mktemp)"
         cat > "$tmp" <<'PROMPT'
@@ -165,6 +169,23 @@ PROMPT
     fi
 
     echo "L4T Debian compatibility patches are present."
+}
+
+check_patch_target() {
+    if [[ -f "$PATCH_FILE" ]]; then
+        PATCH_TARGET_AVAILABLE=true
+        return 0
+    fi
+
+    if [[ "$GENERIC_ONLY" == true || ( -f "$BOARD_CONF" && "$BOARD" != jetson-agx-orin-10g_4eth_pci_nvme_dp ) ]]; then
+        PATCH_TARGET_AVAILABLE=false
+        echo "Warning: OTA recovery script is not present in this BSP tree; skipping OTA-specific compatibility patches."
+        return 0
+    fi
+
+    printf 'ERROR: L4T recovery script not found: %s (set --l4t-dir or JETSON_L4T_DIR)\n' \
+        "$PATCH_FILE" >&2
+    return 1
 }
 
 ensure_board_mb2_bct() {
@@ -199,13 +220,18 @@ fix_usb_autosuspend() {
     fi
 }
 
-[[ -f "$PATCH_FILE" ]] || fail "L4T recovery script not found: $PATCH_FILE (set --l4t-dir or JETSON_L4T_DIR)"
-[[ -f "$BOARD_CONF" ]] || fail "board profile not found: $BOARD_CONF"
+PATCH_TARGET_AVAILABLE=false
+check_patch_target || exit 1
+if [[ "$GENERIC_ONLY" == true ]]; then
+    echo "Warning: board configuration is unavailable; applying release-wide Debian fixes only."
+else
+    [[ -f "$BOARD_CONF" ]] || fail "board profile not found: $BOARD_CONF"
+fi
 
 # The historical custom RCM/BCT and manual recovery prompt apply only to the
 # custom R36 carrier profile. Stock NVIDIA profiles (R35 devkit and R39+) keep
 # their release-provided flashing tools and BCT configuration.
-if [[ "$BOARD" == jetson-agx-orin-10g_4eth_pci_nvme_dp ]]; then
+if [[ "$BOARD" == jetson-agx-orin-10g_4eth_pci_nvme_dp && "$GENERIC_ONLY" == false ]]; then
     [[ -f "$PY_FLASH_INTERNAL" ]] || fail "L4T tegraflash_internal.py not found"
     [[ -f "$RCM_BINARY" ]] || fail "L4T tegrarcm_v2 not found"
     [[ -f "$SOURCE_RCM" ]] || fail "custom tegrarcm_v2 not found"
@@ -213,13 +239,21 @@ fi
 
 check_packages
 fix_usb_autosuspend
-if [[ "$BOARD" == jetson-agx-orin-10g_4eth_pci_nvme_dp ]]; then
+if [[ "$BOARD" == jetson-agx-orin-10g_4eth_pci_nvme_dp && "$GENERIC_ONLY" == false ]]; then
     replace_rcm_binary
     ensure_board_mb2_bct
     apply_patches
 else
-    echo "Stock board profile $BOARD: preserving release-provided RCM/BCT and flash tooling."
-    # Still apply the shell recovery-image fixes where their expected script is
-    # present; skip the custom tegraflash_internal.py handoff patch.
-    apply_patches
+    if [[ "$GENERIC_ONLY" == true ]]; then
+        echo "Board-specific flashing fixes are skipped because no board profile is available."
+    else
+        echo "Stock board profile $BOARD: preserving release-provided RCM/BCT and flash tooling."
+    fi
+    # Apply release-wide shell recovery-image fixes; the custom tegraflash
+    # handoff workaround is reserved for an installed IDS Orin 10G profile.
+    if [[ "$PATCH_TARGET_AVAILABLE" == true ]]; then
+        apply_patches
+    else
+        echo "Release-wide OTA patches were skipped; stock NVIDIA board profiles remain available."
+    fi
 fi

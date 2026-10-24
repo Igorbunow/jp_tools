@@ -100,9 +100,6 @@ rootfs_fix_chipid_to_soc() {
 
 rootfs_fix_normalize_nvidia_soc() {
     local rootfs="$1" board_conf="${2:-}" chipid="" source_file tmp soc
-    if [[ -r "$rootfs/etc/nv_boot_control.conf" ]]; then
-        chipid="$(awk '$1 == "TEGRA_CHIPID" {print $2; exit}' "$rootfs/etc/nv_boot_control.conf")"
-    fi
     if [[ -z "$chipid" && -n "$board_conf" && -r "$board_conf" ]]; then
         chipid="$(LDK_DIR="$(dirname -- "$board_conf")" BOARD_CONF_NAME="$(basename -- "$board_conf")" \
             bash -c 'source "$LDK_DIR/$BOARD_CONF_NAME" >/dev/null 2>&1; printf "%s" "${CHIPID:-}"' 2>/dev/null || true)"
@@ -112,7 +109,7 @@ rootfs_fix_normalize_nvidia_soc() {
     fi
     [[ -n "$chipid" ]] || {
         if grep -RqsE '^[[:space:]]*[^#[:space:]].*<SOC>' "$rootfs/etc/apt/sources.list" "$rootfs/etc/apt/sources.list.d" 2>/dev/null; then
-            printf 'Cannot resolve NVIDIA <SOC> repository placeholder: board CHIPID is unknown.\n' >&2
+            printf 'Cannot resolve NVIDIA <SOC> repository placeholder: select a board profile explicitly before continuing.\n' >&2
             return 1
         fi
         return 0

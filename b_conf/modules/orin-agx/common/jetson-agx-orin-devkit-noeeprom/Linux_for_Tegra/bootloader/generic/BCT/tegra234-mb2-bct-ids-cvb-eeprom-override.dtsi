@@ -1,0 +1,11 @@
+/* Board-specific MB2 override: disable CARRIER EEPROM reads only.
+ * Applied after upstream JP-matched tegra234-mb2-bct-misc-p3701-0000.dts.
+ * Do not disable the CVM/module EEPROM: P3701 identity relies on it.
+ */
+/ {
+    mb2-misc {
+        eeprom {
+            cvb_eeprom_read_size = <0x0>;
+        };
+    };
+};

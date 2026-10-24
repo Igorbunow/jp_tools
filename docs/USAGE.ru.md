@@ -76,6 +76,15 @@ Tegra_Linux_Sample-Root-Filesystem_R36.5.2_aarch64.tbz2
 
 Используйте имена файлов, предоставленные NVIDIA для целевого релиза. Скрипты не скачивают архивы самостоятельно. Архив `public_sources.tbz2` необязателен и будет распакован, только если он находится в каталоге архивов под этим именем.
 
+JetPack 4.6.6 использует L4T R32.7.6. NVIDIA указывает для этого релиза Xavier NX, TX2, AGX Xavier, Nano и TX1, но локальные BSP-архивы разделены на два набора. Теперь setup показывает модули выбранного набора BSP, а не объединение профилей из обоих наборов. Поддерживаемые устройства описаны в [архиве JetPack](https://developer.nvidia.com/embedded/jetpack-archive) и [заметках к выпуску R32.7.6](https://docs.nvidia.com/jetson/archives/l4t-archived/l4t-3276/pdf/Jetson_Linux_Release_Notes_R32.7.6_GA.pdf); разделение архивов в проекте:
+
+```text
+/opt/nvidia/jp/4.6.6/Xavier/       Jetson_Linux_R32.7.6... и Sample-Root-Filesystem...
+/opt/nvidia/jp/4.6.6/Nano2g_TX1/   Jetson-210_Linux_R32.7.6... и Sample-Root-Filesystem...
+```
+
+Набор `Xavier` содержит конфигурации Xavier AGX, Xavier NX и TX2. В `Nano2g_TX1` есть конфигурации Nano, Nano 2GB и TX1; Xavier NX в этом BSP отсутствует. Если явно указать `--module xavier-nx` вместе с `Nano2g_TX1`, setup остановится до развёртывания и попросит выбрать соответствующий набор архивов.
+
 ## 3. Развёртывание дерева L4T
 
 Запускайте из корня репозитория. Пример явно выбирает JetPack 6.2.3, соответствующий релиз архива L4T и профиль AGX Orin devkit без чтения EEPROM carrier-платы:
@@ -93,9 +102,29 @@ Tegra_Linux_Sample-Root-Filesystem_R36.5.2_aarch64.tbz2
 - `--version` задаёт токен релиза L4T, например `R36.5.2`, который должен совпадать с именами архивов NVIDIA.
 - `--jetpack-version` выбирает семейство профиля, например `6.2.3`.
 
-Если не задавать `--version`, выбирается самая новая согласованная пара архивов L4T и rootfs. Если не задавать `--jetpack-version`, используется имя каталога, в котором лежит `setup_jetson.sh`. Если репозиторий склонирован в каталог общего назначения, например `jp_tools`, передавайте `--jetpack-version` явно.
+Если не задавать `--version`, выбирается самая новая согласованная пара архивов L4T и rootfs. Если не задавать `--jetpack-version`, версия определяется по имени каталога архивов или его родительского каталога. Если ни один из них не содержит номер JetPack, передавайте `--jetpack-version` явно.
 
 По умолчанию каталог архивов и базовый каталог развёртывания равны `/opt/nvidia/jp/6.2.3`, поэтому BSP будет находиться в `/opt/nvidia/jp/6.2.3/Linux_for_Tegra`. Для раздельного хранения задайте `--archive-dir PATH` и `--deploy-dir PATH` (или `JETSON_ARCHIVE_DIR` и `JETSON_DEPLOY_DIR`). Если указан только один из путей, он используется для обоих. Старый параметр `--dir PATH` остаётся алиасом `--deploy-dir`. Команда `./setup_jetson.sh --print-paths` показывает выбранные каталоги без развёртывания. Ресурсы проекта `root_fs/`, `b_conf/` и `setup_debian.sh` всегда берутся из репозитория. Скрипт распаковывает L4T и rootfs, запускает `apply_binaries.sh`, создаёт пользователя, копирует overlay, при наличии распаковывает публичные исходники, устанавливает выбранный пакет `b_conf` и применяет исправления для Debian.
+
+При развёртывании скрипт отдельно выводит `Current JetPack version`, а после выбора пары архивов — модули, присутствующие в этом BSP. Для JetPack 4.6.6 вывод различает наборы `Xavier` и `Nano2g_TX1`, описанные выше; для остальных выпусков перечисляются семейства из профилей проекта, выбранные с учётом диапазонов совместимости. Например, профиль `6.2.x` автоматически подходит для промежуточного JetPack 6.2.4. Общий профиль Orin AGX действует начиная с JetPack 5.1.7.
+
+Для JetPack 4.6.6 укажите каталог архивов и семейство модуля. Формат BSP выбирается автоматически:
+
+```bash
+JETSON_ARCHIVE_DIR=/opt/nvidia/jp/4.6.6/Xavier JETSON_DEPLOY_DIR=/tmp/999nv \
+  ./setup_jetson.sh --jetpack-version 4.6.6 --version R32.7.6 \
+  --module xavier-agx --board jetson-xavier --skip-qemu
+
+JETSON_ARCHIVE_DIR=/opt/nvidia/jp/4.6.6/Xavier JETSON_DEPLOY_DIR=/tmp/999nv \
+  ./setup_jetson.sh --jetpack-version 4.6.6 --version R32.7.6 \
+  --module xavier-nx --board jetson-xavier-nx-devkit --skip-qemu
+
+JETSON_ARCHIVE_DIR=/opt/nvidia/jp/4.6.6/Nano2g_TX1 JETSON_DEPLOY_DIR=/tmp/999nv \
+  ./setup_jetson.sh --jetpack-version 4.6.6 --version R32.7.6 \
+  --module nano-2gb --board jetson-nano-2gb-devkit --skip-qemu
+```
+
+Для TX1 используйте `--module tx1 --board jetson-tx1-devkit`. Переменная `JETSON_MODULE` эквивалентна `--module`. Для Xavier выбирается архив NVIDIA `Jetson_Linux_...`, для Nano 2GB/TX1 — `Jetson-210_Linux_...`. Эти профили используют штатный конфиг платы из BSP и не добавляют overlay-файлы.
 
 Перед проверкой APT скрипт заменяет оставшийся токен NVIDIA-репозитория `<SOC>` по выбранному конфигу платы (или по файлу управления загрузкой rootfs, если он уже существует). Это исправляет релизы, где NVIDIA откладывает подстановку до первой загрузки. Релизные исправления rootfs можно добавлять в [`rootfs-fixes/`](../rootfs-fixes/README.md): они выбираются по JetPack, ID дистрибутива и codename. В `/etc/jetson-image-info` записываются версии JetPack/L4T, дистрибутив и профиль платы.
 
@@ -129,16 +158,21 @@ JETSON_SKIP_DEBIAN_PATCHES=1 ./setup_jetson.sh --jetpack-version 6.2.3 --version
 | `JETPACK_VERSION` | `setup_jetson.sh`, `b_conf/flash_jetson.sh` | Выбор или переопределение версии совместимости JetPack. Flasher без неё читает `/etc/jetson-image-info`, затем проверяет данные BSP и архивов. |
 | `L4T_VERSION` | `setup_jetson.sh` | Выбор пары архивов L4T. |
 | `JETSON_BOARD`, `JETSON_USER`, `JETSON_PASS`, `JETSON_HOST` | `setup_jetson.sh` | Профиль платы, имя и пароль пользователя и имя хоста целевой системы. |
+| `JETSON_MODULE` | `setup_jetson.sh`, `b_conf/flash_jetson.sh` | Семейство модуля для выбора профиля; flasher также принимает `--module`. |
+| `JETSON_NVIDIA_PROFILE` | `setup_jetson.sh` | Имя штатного профиля NVIDIA или его номер с 1, показанный в списке, если профиль проекта `b_conf` не найден. |
+| `JETSON_REQUIRE_BOARD_PROFILE` | `setup_jetson.sh` | Значение `1` требует совместимый профиль платы; по умолчанию отсутствие профиля вызывает предупреждение, но не блокирует подготовку системы. |
 | `JETSON_SKIP_DEBIAN_PATCHES` | `setup_jetson.sh` | Значение `1` пропускает host-патчи; по умолчанию `0`, патчи применяются. |
 | `JETSON_APT_UPGRADE`, `JETSON_APT_PACKAGES_FILE` | `setup_jetson.sh` | Включение пакетного APT-обновления rootfs и путь к списку пакетов. |
 | `JETSON_FORCE_CUSTOM_REPOSITORIES` | `setup_jetson.sh` | Значение `1` разрешает пользовательские APT-профили после ошибки проверки репозиториев. |
 | `JETSON_SKIP_ROOTFS_CLEANUP` | `setup_jetson.sh` | Значение `1` сохраняет временные файлы, кэши, логи, историю команд и кэши пользователей/root; значение по умолчанию `0` очищает их после каждой QEMU-сессии. |
 | `JETSON_QEMU_NAMESERVERS` | `setup_jetson.sh` | DNS-серверы через пробел для добавления в `/etc/resolv.conf` rootfs при отсутствии nameserver. |
+
+Если совместимый профиль `b_conf` не найден, setup показывает список штатных профилей NVIDIA в BSP с семействами модулей и просит явно выбрать один. В пакетном режиме укажите `--nvidia-profile 1` (номер с 1 в отсортированном списке) или имя профиля либо задайте `JETSON_NVIDIA_PROFILE` с тем же значением. Явно заданный `--board`/`JETSON_BOARD`, если такой профиль есть в BSP, также считается выбором. Для `<SOC>` используется CHIPID именно выбранного профиля; скрипт не угадывает его по остальным профилям. Чтобы обязательно требовать профиль проекта `b_conf`, укажите `--require-board-profile` или `JETSON_REQUIRE_BOARD_PROFILE=1`; эта проверка выполняется до установки зависимостей, запросов подтверждения и развёртывания.
 | `JETSON_USB_SYSFS_ROOT` | `b_conf/flash_jetson.sh` | Каталог USB sysfs для обнаружения Recovery; по умолчанию `/sys/bus/usb/devices`. |
 | `JETSON_ROOTFS_SIZE` | `b_conf/flash_jetson.sh` | Необязательный размер раздела APP/rootfs (например, `8GiB`) или `max`; размер выше известного предела BSP отклоняется без `--force-rootfs-size`. |
 | `CROSS_COMPILE_AARCH64_PATH`, `TMPDIR` | `b_conf/suppress_uefi_auth_warnings.sh` | Обязательный каталог Buildroot toolchain NVIDIA AArch64 и родитель временного каталога (по умолчанию `/tmp`). |
 
-`cleanup.sh` и `b_conf/select_config.sh` переменные окружения не используют. `b_conf/flash_jetson.sh` определяет JetPack по `/etc/jetson-image-info` в развёрнутом rootfs; для старых образов он сопоставляет L4T-релиз BSP с парой архивов из `JETSON_ARCHIVE_DIR`, затем проверяет имена каталогов. Скрипт выводит найденную версию и источник данных. Если определить её не удалось, показываются только профили `common/`; для переопределения задайте `JETPACK_VERSION` или `--jetpack-version`.
+`cleanup.sh` и `b_conf/select_config.sh` переменные окружения не используют. `b_conf/flash_jetson.sh` определяет JetPack по `/etc/jetson-image-info` в развёрнутом rootfs; для старых образов он сопоставляет L4T-релиз BSP с парой архивов из `JETSON_ARCHIVE_DIR`, затем проверяет имена каталогов. Скрипт выводит найденную версию и источник данных. `--module MODULE` или `JETSON_MODULE` фильтрует семейства профилей; если интерактивно доступны несколько семейств, сначала предлагается выбрать модуль. Если версия неизвестна, задайте `JETPACK_VERSION` или `--jetpack-version`, чтобы включить версионные профили.
 
 Если `Linux_for_Tegra` уже существует, интерактивный режим предложит использовать его повторно или удалить. Параметр `--force` удаляет каталог и выполняет развёртывание из архивов заново. Это удаляет всё содержимое указанного каталога развёртывания; заранее сохраните нужные файлы. В пакетном режиме (`-y`) существующее дерево будет использовано, если не указан `--force`.
 
@@ -191,7 +225,7 @@ JETSON_SKIP_DEBIAN_PATCHES=1 ./setup_jetson.sh --jetpack-version 6.2.3 --version
   --dry-run
 ```
 
-Перед запуском команды без `--dry-run` переведите Jetson в режим USB Recovery и подключите его к хосту. Утилита сначала проверяет USB ID. Для Orin распознаются NVIDIA VID `0955` вместе с Recovery PID `7023`, `7223`, `7323`, `7423`, `7523` или `7623`; устройство `0955:7020` в обычном режиме не считается Recovery. NVIDIA приводит эти Recovery ID в [руководстве быстрого старта Jetson Linux R36.4.3](https://docs.nvidia.com/jetson/archives/r36.4.3/DeveloperGuide/IN/QuickStart.html). Если в интерактивном режиме Recovery-плата не найдена, выберите повтор после подключения/повторного входа в Recovery или выйдите. Пакетный запуск сразу завершится с ошибкой. После обнаружения скрипт установит файлы профиля и запросит подтверждение перед записью разделов устройства.
+Перед запуском команды без `--dry-run` переведите Jetson в USB Recovery и подключите к хосту. Утилита проверяет USB ID: для Orin — `7023`, `7223`, `7323`, `7423`, `7523`, `7623`; AGX Xavier — `7019`; Xavier NX — `7e19`; Nano — `7f21`; TX1 — `7721` (для всех NVIDIA VID `0955`). NVIDIA приводит ID старых модулей в [руководстве быстрого старта Jetson Linux R32.7.5](https://docs.nvidia.com/jetson/archives/l4t-archived/l4t-3275/Tegra%20Linux%20Driver%20Package%20Development%20Guide/quick_start.html), а Orin — в [руководстве R36.4.3](https://docs.nvidia.com/jetson/archives/r36.4.3/DeveloperGuide/IN/QuickStart.html). Устройство `0955:7020` в обычном режиме не считается Recovery. Если плата не найдена интерактивно, выберите повтор после подключения/повторного входа в Recovery или выход. Пакетный запуск сразу завершится с ошибкой. После обнаружения скрипт установит файлы профиля и запросит подтверждение перед записью разделов устройства.
 
 В руководстве релиза NVIDIA также описан запуск `sudo tools/l4t_flash_prerequisites.sh` из распакованного BSP перед прошивкой. Содержимое этого помощника зависит от релиза; данный проект устанавливает пакеты и исправления для Debian, описанные выше ([руководство NVIDIA по прошивке](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/FlashingSupport.html)).
 
@@ -241,19 +275,22 @@ sudo ./flash.sh jetson-agx-orin-10g_4eth_pci_nvme_dp mmcblk0p1
 
 ```text
 b_conf/
-  common/<профиль>/                 # предполагается совместимость между семействами JetPack
-  5.1.7/<профиль>/                  # один точный релиз JetPack
-  6.2.x/<профиль>/                 # предполагается совместимость с семейством 6.2
-  6.x/<профиль>/                   # предполагается совместимость со всеми релизами JetPack 6
-  7.x/<профиль>/                   # предполагается совместимость со всеми релизами JetPack 7
+  modules/
+    orin-agx/
+      common/<профиль>/              # совместимость между семействами JetPack
+      6.2.x/<профиль>/               # предполагаемая совместимость с семейством 6.2
+    xavier-agx/4.6.6/<профиль>/       # профиль для модуля и релиза
+    orin-nx/7.x/<профиль>/            # другой модуль и диапазон релизов
 ```
 
-Селектор проверяет каталоги в порядке: `<major>.<minor>.<patch>`, `<major>.<minor>.x`, `<major>.x`, `common`. Например, для JetPack `6.2.3` проверяются `6.2.3/<профиль>`, `6.2.x/<профиль>`, `6.x/<профиль>`, затем `common/<профиль>`.
+Используйте идентификаторы `orin-agx`, `orin-nx`, `xavier-agx`, `xavier-nx`, `nano-2gb`, `tx1`. Каждый профиль должен находиться в `modules/<модуль>/<селектор>/<профиль>/` и содержать однострочный файл `MODULE` и журнал `COMPATIBILITY.md`. Штатный профиль может не содержать `Linux_for_Tegra/`; тогда конфигурация `<профиль>.conf` уже должна находиться в выбранном BSP. Селектор сохраняет поддержку старых каталогов верхнего уровня во внешних деревьях конфигурации.
+
+После выбора или определения модуля селектор проверяет внутри его каталога: `<major>.<minor>.<patch>`, `<major>.<minor>.x`, `<major>.x`, `common`. Например, для JetPack `6.2.3` и `orin-agx` проверяются `modules/orin-agx/6.2.3/<профиль>`, `modules/orin-agx/6.2.x/<профиль>`, `modules/orin-agx/6.x/<профиль>`, затем `modules/orin-agx/common/<профиль>`.
 
 Каждый пакет должен быть полным; файлы из нескольких пакетов не объединяются. Минимальная рекомендуемая структура:
 
 ```text
-b_conf/<селектор>/<профиль>/
+b_conf/modules/<модуль>/<селектор>/<профиль>/
   COMPATIBILITY.md
   Linux_for_Tegra/
     <профиль>.conf
