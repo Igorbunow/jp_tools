@@ -121,4 +121,14 @@ if b_conf_install_payload "$payload" "$destination" >/dev/null 2>&1; then
 fi
 assert_eq "$(cat "$destination/vendor.conf")" "vendor-data"
 
+b_conf_install_payload "$payload" "$destination" true || fail "approved conflicting payload was not installed"
+assert_eq "$(cat "$destination/vendor.conf")" "attempted-overwrite"
+printf 'outside data\n' > "$fixture/outside.conf"
+ln -s "$fixture/outside.conf" "$destination/linked.conf"
+printf 'replacement\n' > "$payload/linked.conf"
+if b_conf_install_payload "$payload" "$destination" true >/dev/null 2>&1; then
+    fail "approved payload followed/replaced a BSP symlink"
+fi
+assert_eq "$(cat "$fixture/outside.conf")" "outside data"
+
 printf 'PASS: exact, minor-family, major-family and common profile selection\n'

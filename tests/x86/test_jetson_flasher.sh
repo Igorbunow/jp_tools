@@ -99,6 +99,8 @@ assert_contains "$out" 'JETSON_ARCHIVE_DIR'
 assert_contains "$out" 'JETSON_DEPLOY_DIR'
 assert_contains "$out" 'JETSON_ROOTFS_SIZE'
 assert_contains "$out" '--force-rootfs-size'
+assert_contains "$out" 'JETSON_PROFILE'
+assert_contains "$out" '--replace-conflicts'
 
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 6.2.3)"
 assert_contains "$out" 'demo'
@@ -114,14 +116,32 @@ assert_contains "$out" 'jetson-xavier'
 assert_contains "$out" 'jetson-xavier-nx-devkit'
 out="$(bash "$fixture/b_conf/flash_jetson.sh" --board jetson-xavier-stock --module xavier-agx --mode full \
     --jetpack-version 4.6.6 --dry-run --l4t-dir "$fixture/Linux_for_Tegra")"
-assert_contains "$out" '(stock BSP profile; no overlay files)'
+assert_contains "$out" '(NVIDIA stock BSP profile; no overlay files)'
+printf 'ROOTFSSIZE=8GiB\n' > "$fixture/Linux_for_Tegra/jetson-stock-devkit.conf"
+out="$(JETSON_PROFILE=jetson-stock-devkit bash "$fixture/b_conf/flash_jetson.sh" --mode full \
+    --jetpack-version 4.6.6 --dry-run --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'profile=jetson-stock-devkit'
+assert_contains "$out" 'NVIDIA stock BSP profile'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --list --jetpack-version 4.6.6 --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'NVIDIA BSP profiles:'
+assert_contains "$out" 'jetson-stock-devkit'
+out="$(JETSON_PROFILE=not-a-profile bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full \
+    --jetpack-version 6.2.3 --dry-run --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'profile=demo'
 interactive_out="$(printf '1\n1\ny\n' | script -qefc \
     "env JETSON_USB_SYSFS_ROOT='$fixture/sysfs' bash '$fixture/b_conf/flash_jetson.sh' --mode full --jetpack-version 4.6.6 --l4t-dir '$fixture/Linux_for_Tegra'" \
     /dev/null 2>&1)"
 module_prompt_line="$(grep -n 'Compatible module families' <<< "$interactive_out" | head -1 | cut -d: -f1)"
-profile_prompt_line="$(grep -n 'Compatible board profiles' <<< "$interactive_out" | head -1 | cut -d: -f1)"
+profile_prompt_line="$(grep -n 'Compatible b_conf profiles' <<< "$interactive_out" | head -1 | cut -d: -f1)"
 [[ -n "$module_prompt_line" && -n "$profile_prompt_line" && "$module_prompt_line" -lt "$profile_prompt_line" ]] || \
     fail 'interactive flasher did not ask for module before profiles'
+
+interactive_stock_out="$(printf '3\n1\ny\n' | script -qefc \
+    "env JETSON_MODULE=xavier-agx JETSON_USB_SYSFS_ROOT='$fixture/sysfs' bash '$fixture/b_conf/flash_jetson.sh' --mode full --jetpack-version 4.6.6 --l4t-dir '$fixture/Linux_for_Tegra'" \
+    /dev/null 2>&1)"
+assert_contains "$interactive_stock_out" 'Browse NVIDIA profiles included in this JetPack BSP'
+assert_contains "$interactive_stock_out" 'NVIDIA profiles included in this JetPack BSP'
+assert_contains "$interactive_stock_out" 'Flash operation completed for jetson-xavier'
 
 mkdir -p "$fixture/sysfs-xavier/1-1"
 printf '0955\n' > "$fixture/sysfs-xavier/1-1/idVendor"
@@ -135,6 +155,23 @@ out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack
 assert_contains "$out" 'Rootfs partition size: 8GiB'
 assert_contains "$(cat "$JETSON_TEST_LOG")" 'IDS_ROOTFS_SIZE=8GiB ./flash.sh -S 8GiB demo mmcblk0p1'
 [[ -f "$fixture/Linux_for_Tegra/profile.dat" ]] || fail "selected payload was not installed"
+
+printf 'updated profile payload\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/profile.dat"
+if bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes \
+    --l4t-dir "$fixture/Linux_for_Tegra" > "$fixture/conflict.out" 2>&1; then
+    fail 'batch flasher replaced conflicting files without explicit approval'
+fi
+assert_contains "$(cat "$fixture/conflict.out")" 'require --replace-conflicts'
+assert_contains "$(cat "$fixture/conflict.out")" 'profile.dat'
+[[ "$(cat "$fixture/Linux_for_Tegra/profile.dat")" == 'payload' ]] || fail 'unapproved conflict changed the BSP file'
+out="$(bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes \
+    --replace-conflicts --l4t-dir "$fixture/Linux_for_Tegra")"
+assert_contains "$out" 'profile.dat'
+[[ "$(cat "$fixture/Linux_for_Tegra/profile.dat")" == 'updated profile payload' ]] || fail 'approved conflict was not installed'
+printf 'environment-approved payload\n' > "$fixture/b_conf/common/demo/Linux_for_Tegra/profile.dat"
+JETSON_REPLACE_CONFLICTS=1 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes \
+    --l4t-dir "$fixture/Linux_for_Tegra" > "$fixture/env-conflict.out" 2>&1
+[[ "$(cat "$fixture/Linux_for_Tegra/profile.dat")" == 'environment-approved payload' ]] || fail 'JETSON_REPLACE_CONFLICTS did not approve replacement'
 
 out="$(JETSON_TEST_CREATE_STALE_MOUNT=1 bash "$fixture/b_conf/flash_jetson.sh" --board demo --mode full --jetpack-version 6.2.3 --yes --l4t-dir "$fixture/Linux_for_Tegra" 2>&1)"
 assert_contains "$out" 'Warning: cleaning up leftover L4T mount'

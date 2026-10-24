@@ -14,7 +14,8 @@ DEPLOY_BASE_DIR="${JETSON_DEPLOY_DIR:-}"
 ARCHIVE_DIR="${JETSON_ARCHIVE_DIR:-}"
 JETPACK_VERSION="${JETPACK_VERSION:-}"
 JETSON_MODULE="${JETSON_MODULE:-}"
-BOARD=""
+BOARD="${JETSON_PROFILE:-${JETSON_BOARD:-}}"
+SELECTED_BUNDLE=""
 MODE=""
 ROOTDEV="mmcblk0p1"
 ROOTFS_SIZE_REQUESTED="${JETSON_ROOTFS_SIZE:-}"
@@ -25,13 +26,15 @@ FORCE_ROOTFS_SIZE=false
 ASSUME_YES=false
 DRY_RUN=false
 LIST_ONLY=false
+REPLACE_CONFLICTS=false
+STOCK_PROFILE_SELECTED=false
 
 usage() {
     cat <<EOF
 Usage: $0 [options]
 
 Options:
-  --list                       List profiles compatible with the selected version (or common profiles if unknown).
+  --list                       List compatible project and NVIDIA BSP profiles.
   --board PROFILE              Board profile (also accepted: --profile).
   --module MODULE              Module family (e.g. orin-agx, orin-nx, xavier-agx, nano-2gb, tx1).
   --mode MODE                  full, dtb (write A then B), or rootfs (APP only).
@@ -42,6 +45,7 @@ Options:
   --rootfs-size SIZE           Rootfs size (e.g. 8GiB); use 'max' for the BSP/profile maximum.
   --force-rootfs-size SIZE     Force this explicit size if the profile's maximum is unknown or exceeded.
   --yes                        Confirm BSP changes and destructive flash in batch mode.
+  --replace-conflicts          Replace differing profile files already present in the BSP.
   --dry-run                    Print planned file copies and flash commands only.
   -h, --help                   Show this help.
 
@@ -52,6 +56,9 @@ Environment variables:
   JETSON_ROOTFS_SIZE           Rootfs size passed to flash.sh; supports a size or 'max'.
   JETPACK_VERSION              JetPack version used to resolve versioned profiles.
   JETSON_MODULE                Restrict profiles to a module family; CLI --module takes precedence.
+  JETSON_PROFILE               Board profile name; --board/--profile takes precedence.
+  JETSON_BOARD                 Legacy alias for JETSON_PROFILE.
+  JETSON_REPLACE_CONFLICTS     Set to 1 to allow replacing differing BSP files.
   JETSON_USB_SYSFS_ROOT        USB sysfs root used for Recovery detection (default: /sys/bus/usb/devices).
 
 Without --board or --mode, an interactive terminal prompts for the missing choices.
@@ -189,11 +196,13 @@ while (($#)); do
         --rootfs-size) (($# >= 2)) || die "$1 requires a value"; ROOTFS_SIZE_REQUESTED="$2"; shift 2 ;;
         --force-rootfs-size) (($# >= 2)) || die "$1 requires a value"; ROOTFS_SIZE_REQUESTED="$2"; FORCE_ROOTFS_SIZE=true; shift 2 ;;
         --yes|-y) ASSUME_YES=true; shift ;;
+        --replace-conflicts) REPLACE_CONFLICTS=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1 (use --help)" ;;
     esac
 done
+[[ "${JETSON_REPLACE_CONFLICTS:-0}" == 1 || "${JETSON_REPLACE_CONFLICTS:-}" == true ]] && REPLACE_CONFLICTS=true
 
 if [[ -n "$DEPLOY_BASE_DIR" && -z "$L4T_DIR" ]]; then
     L4T_DIR="$DEPLOY_BASE_DIR/Linux_for_Tegra"
@@ -291,6 +300,34 @@ compatible_profiles() {
     done | LC_ALL=C sort
 }
 
+stock_profiles() {
+    local config profile module
+    for config in "$L4T_DIR"/jetson-*.conf; do
+        [[ -f "$config" ]] || continue
+        profile="${config##*/}"
+        profile="${profile%.conf}"
+        module="NVIDIA BSP"
+        case "$profile" in
+            *orin*) module="orin-agx" ;;
+            *xavier-nx*) module="xavier-nx" ;;
+            *xavier*) module="xavier-agx" ;;
+            *nano-2gb*|*nano-2g*) module="nano-2gb" ;;
+            *nano*) module="nano" ;;
+            *tx1*) module="tx1" ;;
+        esac
+        [[ -z "$JETSON_MODULE" || "$JETSON_MODULE" == "$module" ]] || continue
+        printf '%s\t%s\n' "$module" "$profile"
+    done | LC_ALL=C sort -u
+}
+
+stock_profile_available() {
+    local wanted="$1" module profile
+    while IFS=$'\t' read -r module profile; do
+        [[ "$profile" == "$wanted" ]] && return 0
+    done < <(stock_profiles)
+    return 1
+}
+
 compatible_modules() {
     local row module profile bundle
     local -A seen=()
@@ -304,10 +341,12 @@ compatible_modules() {
 
 mapfile -t PROFILE_ROWS < <(compatible_profiles)
 ((${#PROFILE_ROWS[@]} > 0)) || {
-    if [[ "$VERSION_KNOWN" == true ]]; then
-        die "no compatible board profiles for JetPack $JETPACK_VERSION"
-    fi
-    die 'no common board profiles found; set JETPACK_VERSION or use --jetpack-version to select versioned profiles'
+    [[ -n "$(stock_profiles)" ]] || {
+        if [[ "$VERSION_KNOWN" == true ]]; then
+            die "no compatible board profiles for JetPack $JETPACK_VERSION and no NVIDIA profiles found in $L4T_DIR"
+        fi
+        die 'no common board profiles or NVIDIA BSP profiles found; set JETPACK_VERSION or use --jetpack-version'
+    }
 }
 
 if [[ "$LIST_ONLY" == true ]]; then
@@ -321,10 +360,14 @@ if [[ "$LIST_ONLY" == true ]]; then
         printf '  %-14s %-44s %s\n' "$module" "$profile" "${bundle#"$REPO_DIR"/}"
         [[ -f "$bundle/COMPATIBILITY.md" ]] && printf '    compatibility log: %s\n' "${bundle#"$REPO_DIR"/}/COMPATIBILITY.md"
     done
+    printf 'NVIDIA BSP profiles:\n'
+    while IFS=$'\t' read -r module profile; do
+        [[ -n "$profile" ]] && printf '  %-14s %s\n' "$module" "$profile"
+    done < <(stock_profiles)
     exit 0
 fi
 
-has_tty() { [[ -r /dev/tty && -w /dev/tty ]]; }
+has_tty() { [[ -t 0 && -t 1 && -r /dev/tty && -w /dev/tty ]]; }
 
 recovery_device_present() {
     local vendor_file vendor product_file product
@@ -377,7 +420,7 @@ wait_for_recovery_device() {
 }
 
 select_profile_interactively() {
-    local index choice
+    local index choice selected
     local -a modules=()
     if [[ -z "$JETSON_MODULE" ]]; then
         mapfile -t modules < <(compatible_modules)
@@ -391,22 +434,41 @@ select_profile_interactively() {
             mapfile -t PROFILE_ROWS < <(compatible_profiles)
         fi
     fi
-    printf 'Compatible board profiles for JetPack %s:\n' "$JETPACK_VERSION" > /dev/tty
+    printf 'Compatible b_conf profiles for JetPack %s:\n' "${JETPACK_VERSION:-unknown}" > /dev/tty
     for index in "${!PROFILE_ROWS[@]}"; do
         IFS=$'\t' read -r module profile bundle <<< "${PROFILE_ROWS[$index]}"
         printf '  %d) %s (%s)\n' "$((index + 1))" "$profile" "${bundle#"$REPO_DIR"/}" > /dev/tty
     done
+    local stock_choice=$(( ${#PROFILE_ROWS[@]} + 1 ))
+    printf '  %d) Browse NVIDIA profiles included in this JetPack BSP\n' "$stock_choice" > /dev/tty
     printf 'Choose profile number: ' > /dev/tty
     IFS= read -r choice < /dev/tty || die 'could not read profile choice'
-    [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#PROFILE_ROWS[@]})) || die 'invalid profile choice'
-    IFS=$'\t' read -r JETSON_MODULE BOARD SELECTED_BUNDLE <<< "${PROFILE_ROWS[$((choice - 1))]}"
-    [[ "$JETSON_MODULE" != unspecified ]] || JETSON_MODULE=""
+    [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= stock_choice)) || die 'invalid profile choice'
+    if ((choice == stock_choice)); then
+        local -a stocks=()
+        mapfile -t stocks < <(stock_profiles)
+        ((${#stocks[@]} > 0)) || die "no NVIDIA stock profiles found in $L4T_DIR"
+        printf 'NVIDIA profiles included in this JetPack BSP:\n' > /dev/tty
+        for index in "${!stocks[@]}"; do
+            IFS=$'\t' read -r module profile <<< "${stocks[$index]}"
+            printf '  %d) %s (module: %s)\n' "$((index + 1))" "$profile" "$module" > /dev/tty
+        done
+        printf 'Choose NVIDIA profile number: ' > /dev/tty
+        IFS= read -r selected < /dev/tty || die 'could not read NVIDIA profile choice'
+        [[ "$selected" =~ ^[0-9]+$ ]] && ((selected >= 1 && selected <= ${#stocks[@]})) || die 'invalid NVIDIA profile choice'
+        IFS=$'\t' read -r JETSON_MODULE BOARD <<< "${stocks[$((selected - 1))]}"
+        SELECTED_BUNDLE=""
+        STOCK_PROFILE_SELECTED=true
+    else
+        IFS=$'\t' read -r JETSON_MODULE BOARD SELECTED_BUNDLE <<< "${PROFILE_ROWS[$((choice - 1))]}"
+        [[ "$JETSON_MODULE" != unspecified ]] || JETSON_MODULE=""
+    fi
 }
 
 if [[ -z "$BOARD" ]]; then
     has_tty || die 'specify --board in batch mode'
     select_profile_interactively
-else
+elif [[ "$STOCK_PROFILE_SELECTED" != true ]]; then
     if [[ -z "$JETSON_MODULE" ]]; then
         local_profile_modules=()
         for row in "${PROFILE_ROWS[@]}"; do
@@ -428,11 +490,19 @@ else
             JETSON_MODULE="${local_profile_modules[$((choice - 1))]}"
         fi
     fi
-    if [[ "$VERSION_KNOWN" == true ]]; then
-        SELECTED_BUNDLE="$(b_conf_select_package "$B_CONF_DIR" "$BOARD" "$JETPACK_VERSION" "$JETSON_MODULE")" || exit 1
+    if [[ "$VERSION_KNOWN" == true ]] && SELECTED_BUNDLE="$(b_conf_select_package "$B_CONF_DIR" "$BOARD" "$JETPACK_VERSION" "$JETSON_MODULE" 2>/dev/null)"; then
+        :
     else
-        SELECTED_BUNDLE="$B_CONF_DIR/common/$BOARD"
-        [[ -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]] || die "profile '$BOARD' is not common; set JETPACK_VERSION or use --jetpack-version"
+        if [[ "$VERSION_KNOWN" != true && -d "$B_CONF_DIR/modules/$JETSON_MODULE/common/$BOARD" ]]; then
+            SELECTED_BUNDLE="$B_CONF_DIR/modules/$JETSON_MODULE/common/$BOARD"
+        elif [[ -f "$L4T_DIR/$BOARD.conf" ]] && stock_profile_available "$BOARD"; then
+            SELECTED_BUNDLE=""
+        elif [[ "$VERSION_KNOWN" != true ]]; then
+            SELECTED_BUNDLE="$B_CONF_DIR/modules/$JETSON_MODULE/common/$BOARD"
+            [[ -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]] || die "profile '$BOARD' is not common and no NVIDIA BSP profile matches; set JETPACK_VERSION or use --jetpack-version"
+        else
+            die "profile '$BOARD' is neither a compatible b_conf profile nor an NVIDIA profile in $L4T_DIR"
+        fi
     fi
     [[ -f "$SELECTED_BUNDLE/Linux_for_Tegra/$BOARD.conf" || -f "$L4T_DIR/$BOARD.conf" ]] || die "profile config missing: $BOARD.conf"
 fi
@@ -475,7 +545,7 @@ if [[ "$DRY_RUN" == true ]]; then
         while IFS= read -r -d '' file; do printf '  %s\n' "${file#"$SELECTED_BUNDLE/Linux_for_Tegra"/}"; done \
             < <(find "$SELECTED_BUNDLE/Linux_for_Tegra" -type f -print0 | LC_ALL=C sort -z)
     else
-        printf '  (stock BSP profile; no overlay files)\n'
+        printf '  (NVIDIA stock BSP profile; no overlay files)\n'
     fi
     printf 'Would run:\n'
     for command in "${FLASH_COMMANDS[@]}"; do printf '  sudo %s\n' "$command"; done
@@ -496,6 +566,43 @@ terminal_status_start "Jetson flash"
 
 wait_for_recovery_device
 
+conflicting_payload_files() {
+    local payload="$1" source_file relative_path destination
+    [[ -d "$payload" ]] || return 0
+    while IFS= read -r -d '' source_file; do
+        relative_path="${source_file#"$payload"/}"
+        destination="$L4T_DIR/$relative_path"
+        if [[ -e "$destination" || -L "$destination" ]] && \
+            { [[ ! -f "$destination" || -L "$destination" ]] || ! cmp -s -- "$source_file" "$destination"; }; then
+            printf '%s\n' "$relative_path"
+        fi
+    done < <(find "$payload" -type f -print0)
+}
+
+if [[ -n "$SELECTED_BUNDLE" && -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]]; then
+    mapfile -t CONFLICTS < <(conflicting_payload_files "$SELECTED_BUNDLE/Linux_for_Tegra")
+    if ((${#CONFLICTS[@]})); then
+        printf 'Profile files differ from existing BSP files:\n'
+        for relative_path in "${CONFLICTS[@]}"; do
+            printf '  %s\n' "$relative_path"
+            source_file="$SELECTED_BUNDLE/Linux_for_Tegra/$relative_path"
+            destination="$L4T_DIR/$relative_path"
+            if grep -Iq . "$source_file"; then
+                diff -u --label "BSP/$relative_path" --label "b_conf/$relative_path" -- "$destination" "$source_file" || true
+            else
+                printf '    (binary or non-text file differs)\n'
+            fi
+        done
+        if [[ "$REPLACE_CONFLICTS" != true ]]; then
+            has_tty || die 'conflicting profile files require --replace-conflicts or JETSON_REPLACE_CONFLICTS=1 in batch mode'
+            printf 'Replace the differing files listed above? [y/N] ' > /dev/tty
+            IFS= read -r answer < /dev/tty || die 'could not read conflict replacement confirmation'
+            [[ "$answer" =~ ^([yY]|[yY][eE][sS])$ ]] || die 'profile file replacement cancelled'
+            REPLACE_CONFLICTS=true
+        fi
+    fi
+fi
+
 if [[ "$ASSUME_YES" != true ]]; then
     has_tty || die 'non-interactive flashing requires --yes'
     printf 'Profile %s, mode %s. Confirm the Jetson is in USB Recovery and accept that this writes device partitions? [y/N] ' "$BOARD" "$MODE" > /dev/tty
@@ -503,9 +610,9 @@ if [[ "$ASSUME_YES" != true ]]; then
     [[ "$answer" =~ ^([yY]|[yY][eE][sS])$ ]] || die 'operation cancelled'
 fi
 
-printf 'Installing profile %s from %s\n' "$BOARD" "$SELECTED_BUNDLE"
+printf 'Installing profile %s from %s\n' "$BOARD" "${SELECTED_BUNDLE:-NVIDIA BSP}"
 if [[ -d "$SELECTED_BUNDLE/Linux_for_Tegra" ]]; then
-    b_conf_install_payload "$SELECTED_BUNDLE/Linux_for_Tegra" "$L4T_DIR" || die 'profile payload installation failed'
+    b_conf_install_payload "$SELECTED_BUNDLE/Linux_for_Tegra" "$L4T_DIR" "$REPLACE_CONFLICTS" || die 'profile payload installation failed'
 fi
 
 for command in "${FLASH_COMMANDS[@]}"; do

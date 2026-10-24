@@ -123,6 +123,7 @@ b_conf_select_package() {
 b_conf_install_payload() {
     local payload="${1:-}"
     local target="${2:-}"
+    local replace_conflicts="${3:-false}"
     local source_file relative_path destination mode
 
     [[ -d "$payload" && -n "$target" ]] || {
@@ -138,11 +139,17 @@ b_conf_install_payload() {
         relative_path="${source_file#"$payload"/}"
         destination="$target/$relative_path"
         if [[ -e "$destination" || -L "$destination" ]]; then
-            if [[ -f "$destination" && ! -L "$destination" ]] && cmp -s -- "$source_file" "$destination"; then
+            if [[ -L "$destination" || ! -f "$destination" ]]; then
+                printf 'Refusing to replace non-regular BSP path: %s\n' "$destination" >&2
+                return 1
+            fi
+            if cmp -s -- "$source_file" "$destination"; then
                 continue
             fi
-            printf 'Refusing to overwrite existing BSP file: %s\n' "$destination" >&2
-            return 1
+            [[ "$replace_conflicts" == true ]] || {
+                printf 'Refusing to overwrite existing BSP file: %s\n' "$destination" >&2
+                return 1
+            }
         fi
         mode="$(stat -c '%a' "$source_file")"
         sudo install -D -m "$mode" -- "$source_file" "$destination" || return 1

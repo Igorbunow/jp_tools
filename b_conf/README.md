@@ -57,7 +57,10 @@ Run `./b_conf/flash_jetson.sh` from the release directory. With no arguments
 and an interactive terminal it lists compatible profiles, prompts for a
 profile and operation, installs that profile's payload into `Linux_for_Tegra`,
 then asks for confirmation before writing the device. `--list` prints profiles
-without modifying the BSP.
+without modifying the BSP. Profiles embedded in the active NVIDIA BSP are also
+available: the interactive menu lists project `b_conf` profiles first, then
+offers a separate entry to browse NVIDIA profiles. Select either with
+`--board`/`--profile NAME` or `JETSON_PROFILE=NAME`.
 
 Before installing a profile, the utility checks supported NVIDIA Recovery USB
 IDs for Orin, AGX Xavier, Xavier NX, Nano, and TX1 modules. In interactive mode, if no device is found, choose retry after connecting
@@ -87,11 +90,17 @@ overrides detection. `--module MODULE` or `JETSON_MODULE` filters by module
 family (`orin-agx`, `orin-nx`, `xavier-agx`, `xavier-nx`, `nano-2gb`, `tx1`,
 etc.). If multiple module families have compatible profiles, interactive
 selection asks for the module before listing boards. If no version can be
-inferred, only common profiles are listed. `JETSON_USB_SYSFS_ROOT` can override
+inferred, common project profiles and profiles present in the active NVIDIA
+BSP remain available. `JETSON_USB_SYSFS_ROOT` can override
 the USB sysfs path used for Recovery detection (default
 `/sys/bus/usb/devices`). `--dry-run` prints selected files and commands without
 installing or flashing. `--yes` bypasses the interactive USB Recovery and
-data-write confirmation in batch mode.
+data-write confirmation in batch mode. If a project profile contains files
+that differ from files already in the BSP, the utility prints the paths and
+text diffs, then asks before replacing them. Batch mode requires the explicit
+`--replace-conflicts` flag (or `JETSON_REPLACE_CONFLICTS=1`); `--yes` alone
+does not approve file replacement. Symlinks and non-regular destination paths
+are never replaced.
 
 Before a full or rootfs flash, the utility prints the APP/rootfs partition
 size. The default comes from the selected board configuration and may be a
