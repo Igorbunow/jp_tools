@@ -282,6 +282,7 @@ if [[ "$*" =~ apt-get.*[[:space:]]update($|[[:space:]]) ]]; then
     diagnostic="${diagnostics[$result_index]:-${diagnostics[-1]:-none}}"
     case "$diagnostic" in
         ubuntu) printf 'Err:1 http://ports.ubuntu.com/ubuntu-ports noble InRelease\n' ;;
+        ubuntu-repository-error) printf "E: The repository 'http://ports.ubuntu.com/ubuntu-ports noble InRelease' provides only weak security information.\n" ;;
         debian) printf 'Err:1 http://deb.debian.org/debian bookworm InRelease\n' ;;
         nvidia) printf 'Err:1 https://repo.download.nvidia.com/jetson/common r39.2 InRelease\n' ;;
         none) ;;
@@ -301,6 +302,17 @@ qemu_apt_update_with_fallback "$fallback_rootfs" "$profile_root" false
 [[ "$(cat "$JETSON_TEST_APT_UPDATE_COUNT_FILE")" == 1 ]] || {
     echo 'FAIL: successful initial repository validation ran more than once' >&2; exit 1;
 }
+grep -Fq 'Acquire::Languages=none' "$JETSON_TEST_LOG" || {
+    echo 'FAIL: repository validation still downloads optional translation indexes' >&2; exit 1;
+}
+grep -Fq 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled=false' "$JETSON_TEST_LOG" || {
+    echo 'FAIL: repository validation still downloads optional DEP-11 metadata' >&2; exit 1;
+}
+for index_target in DEP-11-icons-small DEP-11-icons DEP-11-icons-hidpi DEP-11-icons-large DEP-11-icons-large-hidpi; do
+    grep -Fq "Acquire::IndexTargets::deb::$index_target::DefaultEnabled=false" "$JETSON_TEST_LOG" || {
+        echo "FAIL: repository validation still downloads optional $index_target metadata" >&2; exit 1;
+    }
+done
 diff -ru "$fixture/fallback-original" "$fallback_sources" >/dev/null || {
     echo 'FAIL: successful initial validation needlessly changed source files' >&2; exit 1;
 }
@@ -338,6 +350,19 @@ grep -Fq 'old-releases.ubuntu.com/ubuntu' "$fallback_sources/sources.list" || {
 }
 [[ ! -e "$fallback_sources/sources.list.d/jetson-custom-profile-mirror.sources" ]] || {
     echo 'FAIL: failed custom profile remained after archive fallback succeeded' >&2; exit 1;
+}
+
+rm -rf "$fallback_sources"
+cp -a "$fixture/fallback-original" "$fallback_sources"
+rm -f "$JETSON_TEST_APT_UPDATE_COUNT_FILE"
+export JETSON_TEST_APT_UPDATE_RESULTS=42,0
+export JETSON_TEST_APT_UPDATE_DIAGNOSTICS=ubuntu-repository-error,none
+qemu_apt_update_with_fallback "$fallback_rootfs" "$fixture/empty-profiles" false
+[[ "$(cat "$JETSON_TEST_APT_UPDATE_COUNT_FILE")" == 2 ]] || {
+    echo 'FAIL: official repository E-line did not trigger Ubuntu archive fallback' >&2; exit 1;
+}
+grep -Fq 'old-releases.ubuntu.com/ubuntu' "$fallback_sources/sources.list" || {
+    echo 'FAIL: official repository E-line fallback was not retained' >&2; exit 1;
 }
 
 rm -rf "$fallback_sources"
@@ -434,8 +459,8 @@ qemu_apt_run_update_upgrade "$fixture/rootfs"
 grep -Fq 'pam-configs/nv-power-adapter-check' "$JETSON_TEST_LOG" || {
     echo 'FAIL: NVIDIA PAM profile preparation did not run before APT' >&2; exit 1;
 }
-grep -Fq 'apt-get -o APT::Update::Error-Mode=any update' "$JETSON_TEST_LOG" || { echo 'FAIL: strict apt update missing' >&2; exit 1; }
-grep -Fq 'LANG=C LC_ALL=C LANGUAGE=C DEBIAN_FRONTEND=noninteractive apt-get -o APT::Update::Error-Mode=any update' "$JETSON_TEST_LOG" || { echo 'FAIL: APT update must use a generated locale-independent environment' >&2; exit 1; }
+grep -Fq 'apt-get -o APT::Update::Error-Mode=any -o Acquire::Languages=none -o Acquire::IndexTargets::deb::DEP-11::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-small::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-hidpi::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-large::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-large-hidpi::DefaultEnabled=false update' "$JETSON_TEST_LOG" || { echo 'FAIL: strict apt update missing or optional indexes remain enabled' >&2; exit 1; }
+grep -Fq 'LANG=C LC_ALL=C LANGUAGE=C DEBIAN_FRONTEND=noninteractive apt-get -o APT::Update::Error-Mode=any -o Acquire::Languages=none -o Acquire::IndexTargets::deb::DEP-11::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-small::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-hidpi::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-large::DefaultEnabled=false -o Acquire::IndexTargets::deb::DEP-11-icons-large-hidpi::DefaultEnabled=false update' "$JETSON_TEST_LOG" || { echo 'FAIL: APT update must use the clean locale and low-memory index settings' >&2; exit 1; }
 grep -Fq 'apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade' "$JETSON_TEST_LOG" || {
     echo 'FAIL: non-interactive apt upgrade missing' >&2; exit 1;
 }
@@ -470,7 +495,7 @@ chmod +x "$fixture/bin/sudo"
 printf 'mc vim\n' > "$packages"
 qemu_apt_load_packages "$packages"
 for failure_case in \
-    'APT::Update::Error-Mode=any update|apt-get update|42' \
+    'APT::Update::Error-Mode=any|apt-get update|42' \
     'upgrade|apt-get upgrade|43' \
     'install mc vim|apt-get install|44'; do
     IFS='|' read -r JETSON_TEST_FAIL_MATCH expected_step expected_status <<< "$failure_case"

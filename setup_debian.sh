@@ -94,11 +94,17 @@ apply_patches() {
     fi
     grep -Fq "tr -d '\\r'" "$PATCH_FILE" || fail "could not apply binlist CR cleanup (Patch A)"
 
-    # B: gzip -t should not print expected errors for uncompressed kernels.
-    if ! grep -Fq 'gzip -t "${_kernel_fs}" > /dev/null 2>&1' "$PATCH_FILE"; then
-        sed -i -E '/gzip -t "\$\{_kernel_fs\}"/s#^[[:space:]]*if[[:space:]]+gzip -t "\$\{_kernel_fs\}"[[:space:]]*;[[:space:]]*then#\t\tif gzip -t "${_kernel_fs}" > /dev/null 2>\&1 ; then#' "$PATCH_FILE"
+    # B: Some releases test whether the kernel image is gzipped; silence the
+    # expected gzip diagnostics for uncompressed kernels. Older OTA scripts
+    # (including R32.7.6) do not perform this test, so the patch is inapplicable.
+    if grep -Fq 'gzip -t "${_kernel_fs}"' "$PATCH_FILE"; then
+        if ! grep -Fq 'gzip -t "${_kernel_fs}" > /dev/null 2>&1' "$PATCH_FILE"; then
+            sed -i -E '/gzip -t "\$\{_kernel_fs\}"/s#^[[:space:]]*if[[:space:]]+gzip -t "\$\{_kernel_fs\}"[[:space:]]*;[[:space:]]*then#\t\tif gzip -t "${_kernel_fs}" > /dev/null 2>\&1 ; then#' "$PATCH_FILE"
+        fi
+        grep -Fq 'gzip -t "${_kernel_fs}" > /dev/null 2>&1' "$PATCH_FILE" || fail "could not apply gzip check (Patch B)"
+    else
+        echo "Patch B not applicable: release does not test kernel compression with gzip."
     fi
-    grep -Fq 'gzip -t "${_kernel_fs}" > /dev/null 2>&1' "$PATCH_FILE" || fail "could not apply gzip check (Patch B)"
 
     # C: Some initrds do not contain dhclient-script.
     if ! grep -Fq 'if [ -f "${_initrd_dir}/sbin/dhclient-script" ]; then' "$PATCH_FILE"; then

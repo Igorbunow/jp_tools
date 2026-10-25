@@ -551,7 +551,16 @@ qemu_apt_run_repository_update() {
     local output_file status uri
     QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE=false
     output_file="$(mktemp /tmp/jetson-apt-update.XXXXXX)" || return 1
-    if qemu_apt_run_in_rootfs "$rootfs_path" apt-get -o APT::Update::Error-Mode=any update >"$output_file" 2>&1; then
+    if qemu_apt_run_in_rootfs "$rootfs_path" apt-get \
+        -o APT::Update::Error-Mode=any \
+        -o Acquire::Languages=none \
+        -o Acquire::IndexTargets::deb::DEP-11::DefaultEnabled=false \
+        -o Acquire::IndexTargets::deb::DEP-11-icons-small::DefaultEnabled=false \
+        -o Acquire::IndexTargets::deb::DEP-11-icons::DefaultEnabled=false \
+        -o Acquire::IndexTargets::deb::DEP-11-icons-hidpi::DefaultEnabled=false \
+        -o Acquire::IndexTargets::deb::DEP-11-icons-large::DefaultEnabled=false \
+        -o Acquire::IndexTargets::deb::DEP-11-icons-large-hidpi::DefaultEnabled=false \
+        update >"$output_file" 2>&1; then
         status=0
     else
         status=$?
@@ -562,7 +571,7 @@ qemu_apt_run_repository_update() {
             QEMU_APT_LAST_OFFICIAL_REPOSITORY_FAILURE=true
             break
         fi
-    done < <(grep -E '(^Err:|Failed to fetch )' "$output_file" | grep -Eo 'https?://[^[:space:]]+' || true)
+    done < <(grep -E '(^Err:|Failed to fetch |^E: The repository )' "$output_file" | grep -Eo 'https?://[^[:space:]]+' || true)
     rm -f -- "$output_file"
     return "$status"
 }
